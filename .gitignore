@@ -1,0 +1,11 @@
+.idea
+.git
+build
+node_modules
+*.map
+todo.md
+tmp
+demo
+*.tmp
+.nyc_output
+*.kdev4
