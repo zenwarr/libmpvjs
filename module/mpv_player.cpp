@@ -8,12 +8,9 @@
 #include <uv.h>
 #include <locale>
 #include <memory>
+#include <cstring>
 #include "mpv_player.h"
 #include "helpers.h"
-
-extern "C" {
-#include <libavcodec/avcodec.h>
-}
 
 using namespace v8;
 using namespace std;
@@ -76,11 +73,7 @@ public:
         break;
 
       case GL_EXTENSIONS:
-        result = "GL_ARB_framebuffer_object";
-        break;
-
-      case GL_RENDERER:
-        result = "Software Rasterizer";
+        result = "";
         break;
 
       default:
@@ -248,25 +241,38 @@ public:
 
   void glBindBuffer(GLenum target, GLuint buffer) {
     DEBUG("glBindBuffer\n");
-  
-    auto buffer_iter = _buffers.find(buffer);
-    if (buffer_iter == _buffers.end()) {
-      // set GL_INVALID_VALUE
+
+    if (buffer == 0) {
+      callMethod("bindBuffer", { MKI(target), Null(_isolate) });
       return;
     }
-    
+
+    auto buffer_iter = _buffers.find(buffer);
+    if (buffer_iter == _buffers.end()) {
+      DEBUG("glBindBuffer: invalid buffer id %d\n", buffer);
+      return;
+    }
+
+    DEBUG("binding a buffer with id %d to target %d\n", buffer, target);
     callMethod("bindBuffer", { MKI(target), buffer_iter->second->Get(_isolate) });
   }
 
   void glBindTexture(GLenum target, GLuint texture) {
     DEBUG("glBindTexture\n");
-    
-    auto texture_iter = _textures.find(texture);
-    if (texture_iter == _textures.end()) {
-      // set GL_INVALID_VALUE
+
+    if (texture == 0) {
+      DEBUG("binding default texture to target %d\n", target);
+      callMethod("bindTexture", {MKI(target), Null(_isolate)});
       return;
     }
-    
+
+    auto texture_iter = _textures.find(texture);
+    if (texture_iter == _textures.end()) {
+      DEBUG("glBindTexture: invalid texture id %d\n", texture);
+      return;
+    }
+
+    DEBUG("binding a texture with id %d to target %d\n", texture, target);
     callMethod("bindTexture", { MKI(target), texture_iter->second->Get(_isolate) });
   }
 
@@ -287,10 +293,11 @@ public:
     if (size == 0) {
       return;
     }
-    
-    callMethod("bufferData", { MKI(target), Integer::NewFromUnsigned(_isolate, static_cast<uint32_t>(size)),
-                               ArrayBuffer::New(_isolate, (void*)data, static_cast<size_t>(size)),
-                               MKI(usage), MKI(0) });
+
+    auto buf = ArrayBuffer::New(_isolate, static_cast<size_t>(size));
+    memcpy(buf->GetContents().Data(), data, static_cast<size_t>(size));
+
+    callMethod("bufferData", { MKI(target), buf, MKI(usage) });
   }
 
   void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const GLvoid *data) {
@@ -304,10 +311,12 @@ public:
     if (size == 0) {
       return;
     }
-    
+
+    auto buf = ArrayBuffer::New(_isolate, static_cast<size_t>(size));
+    memcpy(buf->GetContents().Data(), data, static_cast<size_t>(size));
+
     callMethod("bufferSubData", { MKI(target), Integer::NewFromUnsigned(_isolate, static_cast<uint32_t>(size)),
-                                  ArrayBuffer::New(_isolate, (void*)data, static_cast<size_t>(size)),
-                                  MKI(0) });
+                                  buf });
   }
 
   void glClear(GLbitfield mask) {
@@ -469,21 +478,60 @@ public:
 
     auto result = callMethod("getError").As<Integer>();
 
-    DEBUG("glError result: %ld\n", result->IntegerValue());
-
-    return static_cast<GLenum>(result->IntegerValue());
+    auto err_code = static_cast<GLenum>(result->IntegerValue());
+    if (err_code != GL_NO_ERROR) {
+      DEBUG("glError result: %ld\n", result->IntegerValue());
+    }
+    return err_code;
   }
 
   void glGetIntegerv(GLenum pname, GLint *params) {
-    DEBUG("glGetIntegerv\n");
+    DEBUG("glGetIntegerv: %d\n", pname);
 
     if (!params) {
       return;
     }
 
     auto r = callMethod("getParameter", MKI(pname)).As<Integer>();
-    if (!r.IsEmpty()) {
-      *params = static_cast<GLint>(r->IntegerValue());
+    if (glGetError() != GL_NO_ERROR) {
+      DEBUG("Exceptions catched while executing getParameter!");
+    }
+
+    if (r.IsEmpty()) {
+      return;
+    }
+
+    switch (pname) {
+      case GL_PIXEL_PACK_BUFFER_BINDING:
+      case GL_PIXEL_UNPACK_BUFFER_BINDING:
+        // convert to buffer index
+        *params = static_cast<GLint>(getIndexFromObject(_buffers, r));
+        break;
+
+      case GL_FRAMEBUFFER_BINDING:
+        // convert to framebuffer index
+        *params = static_cast<GLint>(getIndexFromObject(_framebuffers, r));
+        break;
+
+      case GL_CURRENT_PROGRAM:
+        // convert to program index
+        *params = static_cast<GLint>(getIndexFromObject(_programs, r));
+        break;
+
+      case GL_TEXTURE_BINDING_2D:
+      case GL_TEXTURE_BINDING_CUBE_MAP:
+        // convert to texture index
+        *params = static_cast<GLint>(getIndexFromObject(_textures, r));
+        break;
+
+      default:
+        if (r->IsBoolean()) {
+          *params = static_cast<GLint>(r->BooleanValue());
+        } else if (r->IsNumber()) {
+          *params = static_cast<GLint>(r->IntegerValue());
+        } else {
+          DEBUG("glGetIntegerv: unexpected return type\n");
+        }
     }
   }
 
@@ -516,11 +564,14 @@ public:
   void glPixelStorei(GLenum pname, GLint param) {
     DEBUG("glPixelStorei\n");
 
+    DEBUG("glPixelStorei called with pname = %d and param = %d\n", pname, param);
     callMethod("pixelStorei", { MKI(pname), MKI(param) });
   }
 
   void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *data) {
     DEBUG("glReadPixels\n");
+
+    throw_js(_isolate, "glReadPixels");
 
     if (!data) {
       return;
@@ -531,7 +582,7 @@ public:
 
     switch (type) {
       case GL_UNSIGNED_BYTE:
-        shared_buf = ArrayBuffer::New(_isolate, data, width * height * sizeof(GLubyte));
+        shared_buf = ArrayBuffer::New(_isolate, width * height * sizeof(GLubyte));
         buf_view = Uint8Array::New(shared_buf, 0, static_cast<size_t>(width * height));
         break;
 
@@ -571,25 +622,15 @@ public:
       return;
     }
 
-    GLint bound_buf = 0;
-    glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &bound_buf);
-    if (bound_buf >= 1) {
-      // If a non-zero named buffer object is bound to the GL_PIXEL_UNPACK_BUFFER target
-      // while a texture image is specified, data is treated as a byte offset into the buffer object's data store.
-      DEBUG("glTextImage2D called with unsupported offset parameter\n");
-      return;
-    }
-
     if (!data) {
       // data may be a null pointer. In this case, texture memory is allocated to accommodate
       // a texture of width width and height height.
-      callMethod("texImage2D", { MKI(target), MKI(target), MKI(internal_format), MKI(width),
-                                 MKI(height), MKI(border), MKI(format), MKI(type) });
+      callMethod("texImage2D", { MKI(target), MKI(level), MKI(internal_format), MKI(width),
+                                 MKI(height), MKI(border), MKI(format), MKI(type), Null(_isolate) });
     } else {
       auto bufs = getTexBuffers(type, width, height, data);
 
-      DEBUG("calling webgl method\n");
-      callMethod("texImage2D", { MKI(target), MKI(target), MKI(internal_format), MKI(width),
+      callMethod("texImage2D", { MKI(target), MKI(level), MKI(internal_format), MKI(width),
                                  MKI(height), MKI(border), MKI(format), MKI(type), bufs.second });
     }
   }
@@ -625,7 +666,7 @@ public:
   void glUniform3f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2) {
     DEBUG("glUniform3f\n");
 
-    callLocationMethod("uniform3d", location, { MKN(v0), MKN(v1), MKN(v2) });
+    callLocationMethod("uniform3f", location, { MKN(v0), MKN(v1), MKN(v2) });
   }
 
   void glUniform1i(GLint location, GLint v0) {
@@ -634,16 +675,26 @@ public:
     callLocationMethod("uniform1i", location, { MKN(v0) });
   }
 
-  void glUniformMatrix2fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) {
+  void glUniformMatrix2fv(GLint location, GLsizei matrix_count, GLboolean transpose, const GLfloat *value) {
     DEBUG("glUniformMatrix2fv\n");
 
-    uniformMatrix(location, count, transpose, value);
+    if (matrix_count != 1) {
+      DEBUG("glUniformMatrix2fv called with unsupported parameter");
+      return;
+    }
+
+    uniformMatrix("uniformMatrix2fv", 2, location, transpose, value);
   }
 
-  void glUniformMatrix3fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) {
+  void glUniformMatrix3fv(GLint location, GLsizei matrix_count, GLboolean transpose, const GLfloat *value) {
     DEBUG("glUniformMatrix3fv\n");
 
-    uniformMatrix(location, count, transpose, value);
+    if (matrix_count != 1) {
+      DEBUG("glUniformMatrix2fv called with unsupported parameter");
+      return;
+    }
+
+    uniformMatrix("uniformMatrix3fv", 3, location, transpose, value);
   }
 
   void glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean normalized,
@@ -772,6 +823,9 @@ public:
 
     // if not, get the method from rendering context and cache it
     auto method = get_method(_isolate, _renderingContext, method_name.c_str());
+    if (method.IsEmpty() || method->IsNull() || method->IsUndefined()) {
+      DEBUG("failed to get context method %s\n", method_name.c_str());
+    }
     auto pers = make_shared<Persistent<Function>>(_isolate, method);
     _webgl_methods[method_name] = pers;
     return pers;
@@ -797,6 +851,16 @@ public:
     return object_id;
   }
 
+  template<class T>
+  T getIndexFromObject(map<T, shared_ptr<Persistent<Value>>> &store, const Local<Value> &value)const {
+    for (auto obj_iter = store.begin(); obj_iter != store.end(); ++obj_iter) {
+      if (value == *(obj_iter->second)) {
+        return obj_iter->first;
+      }
+    }
+    return 0;
+  }
+
   pair<Local<ArrayBuffer>, Local<Value>> getTexBuffers(GLenum type, GLsizei width,
                                                              GLsizei height, const GLvoid *data) {
     Local<ArrayBuffer> shared_buf;
@@ -806,34 +870,33 @@ public:
 
     switch (type) {
       case GL_UNSIGNED_BYTE:
-        DEBUG("creating a shared array buffer\n");
-        shared_buf = ArrayBuffer::New(_isolate, const_cast<void*>(data), width * height * sizeof(GLubyte));
-        DEBUG("creating a buffer view\n");
+        shared_buf = ArrayBuffer::New(_isolate, width * height * sizeof(GLubyte));
+        memcpy(shared_buf->GetContents().Data(), data, width * height * sizeof(GLubyte));
         buf_view = Uint8Array::New(shared_buf, 0, static_cast<size_t>(width * height));
-        DEBUG("done!\n");
         break;
 
-      case GL_UNSIGNED_SHORT:
-      case GL_UNSIGNED_SHORT_5_6_5:
-      case GL_UNSIGNED_SHORT_4_4_4_4:
-      case GL_UNSIGNED_SHORT_5_5_5_1:
-      case GL_HALF_FLOAT:
-        shared_buf = ArrayBuffer::New(_isolate, const_cast<void*>(data), width * height * sizeof(GLushort));
-        buf_view = Uint16Array::New(shared_buf, 0, static_cast<size_t>(width * height));
-        break;
-
-      case GL_UNSIGNED_INT:
-      case GL_UNSIGNED_INT_24_8:
-        shared_buf = ArrayBuffer::New(_isolate, const_cast<void*>(data), width * height * sizeof(GLuint));
-        buf_view = Uint32Array::New(shared_buf, 0, static_cast<size_t>(width * height));
-        break;
-
-      case GL_FLOAT:
-        shared_buf = ArrayBuffer::New(_isolate, const_cast<void*>(data), width * height * sizeof(GLfloat));
-        buf_view = Float32Array::New(shared_buf, 0, static_cast<size_t>(width * height));
-        break;
+//      case GL_UNSIGNED_SHORT:
+//      case GL_UNSIGNED_SHORT_5_6_5:
+//      case GL_UNSIGNED_SHORT_4_4_4_4:
+//      case GL_UNSIGNED_SHORT_5_5_5_1:
+//      case GL_HALF_FLOAT:
+//        shared_buf = ArrayBuffer::New(_isolate, const_cast<void*>(data), width * height * sizeof(GLushort));
+//        buf_view = Uint16Array::New(shared_buf, 0, static_cast<size_t>(width * height));
+//        break;
+//
+//      case GL_UNSIGNED_INT:
+//      case GL_UNSIGNED_INT_24_8:
+//        shared_buf = ArrayBuffer::New(_isolate, const_cast<void*>(data), width * height * sizeof(GLuint));
+//        buf_view = Uint32Array::New(shared_buf, 0, static_cast<size_t>(width * height));
+//        break;
+//
+//      case GL_FLOAT:
+//        shared_buf = ArrayBuffer::New(_isolate, const_cast<void*>(data), width * height * sizeof(GLfloat));
+//        buf_view = Float32Array::New(shared_buf, 0, static_cast<size_t>(width * height));
+//        break;
 
       default:
+        throw_js(_isolate, "unsupported data format for getTexBuffers");
         DEBUG("glTextImage2D: unsupported data format %d", type);
     }
 
@@ -852,11 +915,24 @@ public:
       return;
     }
 
+    if (pname == GL_COMPILE_STATUS) {
+
+    } else if (pname == GL_INFO_LOG_LENGTH) {
+      *params = 1024 * 10;
+      DEBUG("simulating GL_INFO_LOG_LENGTH parameter...\n");
+      return;
+    }
+
     auto result = callMethod(webgl_method, { obj_iter->second->Get(_isolate), MKI(pname) } );
     if (result->IsNumber() || result->IsNumberObject()) {
       auto maybe_int = result->IntegerValue(_isolate->GetCurrentContext());
       if (maybe_int.IsJust()) {
         *params = static_cast<GLint>(maybe_int.ToChecked());
+      }
+    } else if (result->IsBoolean() || result->IsBooleanObject()) {
+      auto maybe_bool = result->BooleanValue(_isolate->GetCurrentContext());
+      if (maybe_bool.IsJust()) {
+        *params = static_cast<GLint>(maybe_bool.ToChecked());
       }
     } else {
       DEBUG("getProgramParameter with pname = %d: returned value is not an integer\n", pname);
@@ -900,17 +976,20 @@ public:
     callMethod(webgl_method, m_args);
   }
 
-  void uniformMatrix(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) {
+  void uniformMatrix(const string &method, int matrix_size, GLint location, GLboolean transpose, const GLfloat *value) {
     auto loc_iter = _uniforms.find(location);
     if (loc_iter == _uniforms.end()) {
       // set GL_INVALID_VALUE
       return;
     }
 
-    auto shared_buf = ArrayBuffer::New(_isolate, static_cast<void*>(const_cast<GLfloat*>(value)), count * sizeof(GLfloat));
-    auto buf_view = Float32Array::New(shared_buf, 0, static_cast<size_t>(count));
+    int matrix_elem_count = matrix_size * matrix_size;
 
-    callMethod("uniformMatrix2fv", { loc_iter->second->Get(_isolate), Boolean::New(_isolate, transpose), buf_view });
+    auto buf = ArrayBuffer::New(_isolate, matrix_elem_count * sizeof(GLfloat));
+    memcpy(buf->GetContents().Data(), value, matrix_elem_count * sizeof(GLfloat));
+    auto buf_view = Float32Array::New(buf, 0, static_cast<size_t>(matrix_elem_count));
+
+    callMethod(method, { loc_iter->second->Get(_isolate), Boolean::New(_isolate, transpose), buf_view });
   }
 
   static MpvPlayerImpl *singleton() {
@@ -1140,8 +1219,6 @@ static map<string, void*> gl_func_map = {
  * The function used by MPV to get addresses for opengl functions.
  */
 static void *get_proc_address(void *ctx, const char *name) {
-  DEBUG("Requested GL method: %s\n", name);
-
   auto iter = gl_func_map.find(string(name));
   if (iter == gl_func_map.end()) {
     fprintf(stderr, "No WebGL wrapper for a function named %s\n", name);
@@ -1203,7 +1280,7 @@ void MpvPlayer::Init(Local<Object> exports) {
     }
 
     // extract object pointing to canvas
-    auto canvas = shared_ptr<Persistent<Object>>(new Persistent<Object>(isolate, arg->ToObject()));
+    auto canvas = make_shared<Persistent<Object>>(isolate, arg->ToObject());
 
     // create rendering context on our canvas
     Local<Object> fGetContext = canvas->Get(isolate)->Get(String::NewFromUtf8(isolate, "getContext"))->ToObject();
@@ -1214,7 +1291,7 @@ void MpvPlayer::Init(Local<Object> exports) {
 
     // and call canvas.getContext to get webgl rendering context
     Local<Value> getContextArgs[] = {
-      String::NewFromUtf8(isolate, "webgl")
+      String::NewFromUtf8(isolate, "webgl2")
     };
     TryCatch tryCatch;
     Local<Value> getContextResult = Local<Function>::Cast(fGetContext)->Call(canvas->Get(isolate), 1, getContextArgs);
@@ -1228,7 +1305,7 @@ void MpvPlayer::Init(Local<Object> exports) {
       throw_js(isolate, "MpvPlayer::create: failed to initialize WebGL");
       return;
     }
-    auto webglContext = shared_ptr<Persistent<Object>>(new Persistent<Object>(isolate, getContextResult->ToObject()));
+    auto webglContext = make_shared<Persistent<Object>>(isolate, getContextResult->ToObject());
 
     auto playerObject = new MpvPlayer(isolate, canvas, webglContext);
     playerObject->Wrap(args.This());
@@ -1237,18 +1314,6 @@ void MpvPlayer::Init(Local<Object> exports) {
     // our constructor function is called as a function, without new
     isolate->ThrowException(String::NewFromUtf8(isolate, "MpvPlayer constructor should be called with new"));
   }
-
-  avcodec_register_all();
-
-  // enumerate codecs supported by libav
-  DEBUG("Enumerating ffmpeg codecs...\n");
-  AVCodec *cur_codec = nullptr;
-  do {
-    cur_codec = av_codec_next(cur_codec);
-    if (cur_codec) {
-      DEBUG("Codec: %s\n", cur_codec->name);
-    }
-  } while (cur_codec);
 }
 
 /**
@@ -1279,9 +1344,8 @@ void MpvPlayer::Create(const FunctionCallbackInfo<Value> &args) {
 
   mpv_set_option_string(self->d->_mpv, "opengl-hwdec-interop", "auto");
   mpv_set_option_string(self->d->_mpv, "vo", "opengl-cb");
-  mpv_set_option_string(self->d->_mpv, "hwdec", "no");
+  mpv_set_option_string(self->d->_mpv, "hwdec", "auto");
   mpv_set_option_string(self->d->_mpv, "sub-auto", "no");
-  mpv_set_option_string(self->d->_mpv, "log-file", "~/electron-mpv.log");
 
   self->d->_mpv_gl = static_cast<mpv_opengl_cb_context*>(mpv_get_sub_api(self->d->_mpv, MPV_SUB_API_OPENGL_CB));
   if (!self->d->_mpv_gl) {

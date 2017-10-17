@@ -18,7 +18,8 @@
         "-l:libswresample.a",
         "-lpulse"
       ],
-      "ldflags": [ "-Wl,-Bsymbolic -fPIC" ]
+      "ldflags": [ "-Wl,-Bsymbolic" ],
+      "cxxflags": [ "-fexceptions" ]
     }
   ]
 }
