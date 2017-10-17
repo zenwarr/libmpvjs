@@ -14,6 +14,7 @@
 
 using namespace v8;
 using namespace std;
+using namespace node;
 
 /*************************************************************************************
  * MpvPlayerImpl
@@ -24,20 +25,16 @@ using namespace std;
 
 typedef map<GLuint, shared_ptr<Persistent<Value>>> ObjectStore;
 
-class MpvPlayerImpl {
+class MPImpl {
 public:
-  MpvPlayerImpl(Isolate *isolate,
-                shared_ptr<Persistent<Object>> canvas,
-                shared_ptr<Persistent<Object>> renderingContext
+  MPImpl(Isolate *isolate,
+         const shared_ptr<Persistent<Object>> &canvas,
+         const shared_ptr<Persistent<Object>> &renderingContext
   ) : _isolate(isolate), _canvas(canvas), _renderingContext(renderingContext) {
     _singleton = this;
   }
 
-  ~MpvPlayerImpl() {
-    if (_canvas) {
-      _canvas->Reset();
-    }
-
+  ~MPImpl() {
     // unint mpv
     if (_mpv) {
       mpv_detach_destroy(_mpv);
@@ -84,7 +81,7 @@ public:
 
     if (!result.empty()) {
       gl_props[name] = result;
-      return (const GLubyte*)gl_props[name].c_str();
+      return reinterpret_cast<const GLubyte*>(gl_props[name].c_str());
     } else {
       return nullptr;
     }
@@ -107,7 +104,7 @@ public:
 
     auto prog_iter = _programs.find(program_id);
     if (prog_iter == _programs.end()) {
-      // set GL_INVALID_VALUE
+      // ignore silently
       return;
     }
 
@@ -161,7 +158,7 @@ public:
 
     auto sh_iter = _shaders.find(shader_id);
     if (sh_iter == _shaders.end()) {
-      // set GL_INVALID_VALUE
+      // ignore silently
       return;
     }
 
@@ -249,11 +246,10 @@ public:
 
     auto buffer_iter = _buffers.find(buffer);
     if (buffer_iter == _buffers.end()) {
-      DEBUG("glBindBuffer: invalid buffer id %d\n", buffer);
+      // set GL_INVALID_VALUE
       return;
     }
 
-    DEBUG("binding a buffer with id %d to target %d\n", buffer, target);
     callMethod("bindBuffer", { MKI(target), buffer_iter->second->Get(_isolate) });
   }
 
@@ -261,18 +257,16 @@ public:
     DEBUG("glBindTexture\n");
 
     if (texture == 0) {
-      DEBUG("binding default texture to target %d\n", target);
       callMethod("bindTexture", {MKI(target), Null(_isolate)});
       return;
     }
 
     auto texture_iter = _textures.find(texture);
     if (texture_iter == _textures.end()) {
-      DEBUG("glBindTexture: invalid texture id %d\n", texture);
+      // set GL_INVALID_VALUE
       return;
     }
 
-    DEBUG("binding a texture with id %d to target %d\n", texture, target);
     callMethod("bindTexture", { MKI(target), texture_iter->second->Get(_isolate) });
   }
 
@@ -289,15 +283,17 @@ public:
       // set GL_INVALID_VALUE
       return;
     }
-    
-    if (size == 0) {
-      return;
+
+    if (!data) {
+      callMethod("bufferData", { MKI(target),
+                                 Integer::NewFromUnsigned(_isolate, static_cast<uint32_t>(size)),
+                                 MKI(usage) });
+    } else {
+      auto buf = ArrayBuffer::New(_isolate, static_cast<size_t>(size));
+      memcpy(buf->GetContents().Data(), data, static_cast<size_t>(size));
+
+      callMethod("bufferData", { MKI(target), buf, MKI(usage) });
     }
-
-    auto buf = ArrayBuffer::New(_isolate, static_cast<size_t>(size));
-    memcpy(buf->GetContents().Data(), data, static_cast<size_t>(size));
-
-    callMethod("bufferData", { MKI(target), buf, MKI(usage) });
   }
 
   void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const GLvoid *data) {
@@ -315,7 +311,8 @@ public:
     auto buf = ArrayBuffer::New(_isolate, static_cast<size_t>(size));
     memcpy(buf->GetContents().Data(), data, static_cast<size_t>(size));
 
-    callMethod("bufferSubData", { MKI(target), Integer::NewFromUnsigned(_isolate, static_cast<uint32_t>(size)),
+    callMethod("bufferSubData", { MKI(target),
+                                  Integer::NewFromUnsigned(_isolate, static_cast<uint32_t>(offset)),
                                   buf });
   }
 
@@ -334,51 +331,13 @@ public:
   void glDeleteBuffers(GLsizei n, const GLuint *buffers) {
     DEBUG("glDeleteBuffers\n");
     
-    if (!buffers || n == 0) {
-      return;
-    }
-    
-    if (n < 0) {
-      // set GL_INVALID_VALUE
-      return;
-    }
-    
-    for (int j = 0; j < n; ++j) {
-      auto buffer_iter = _buffers.find(buffers[j]);
-      if (buffer_iter == _buffers.end()) {
-        continue;
-      }
-      
-      callMethod("deleteBuffer", buffer_iter->second->Get(_isolate));
-      if (glGetError() == GL_NO_ERROR) {
-        _buffers.erase(buffer_iter);
-      }
-    }
+    deleteObjects("deleteBuffer", _buffers, n, buffers);
   }
 
   void glDeleteTextures(GLsizei n, const GLuint *textures) {
     DEBUG("glDeleteTextures\n");
-    
-    if (!textures || n == 0) {
-      return;
-    }
-    
-    if (n < 0) {
-      // set GL_INVALID_VALUE
-      return;
-    }
-    
-    for (int j = 0; j < n; ++j) {
-      auto texture_iter = _textures.find(textures[j]);
-      if (texture_iter == _textures.end()) {
-        continue;
-      }
-      
-      callMethod("deleteTexture", texture_iter->second->Get(_isolate));
-      if (glGetError() == GL_NO_ERROR) {
-        _textures.erase(texture_iter);
-      }
-    }
+
+    deleteObjects("deleteTexture", _textures, n, textures);
   }
 
   void glEnable(GLenum cap) {
@@ -493,10 +452,6 @@ public:
     }
 
     auto r = callMethod("getParameter", MKI(pname)).As<Integer>();
-    if (glGetError() != GL_NO_ERROR) {
-      DEBUG("Exceptions catched while executing getParameter!");
-    }
-
     if (r.IsEmpty()) {
       return;
     }
@@ -504,6 +459,8 @@ public:
     switch (pname) {
       case GL_PIXEL_PACK_BUFFER_BINDING:
       case GL_PIXEL_UNPACK_BUFFER_BINDING:
+      case GL_TRANSFORM_FEEDBACK_BUFFER_BINDING:
+      case GL_UNIFORM_BUFFER_BINDING:
         // convert to buffer index
         *params = static_cast<GLint>(getIndexFromObject(_buffers, r));
         break;
@@ -571,32 +528,34 @@ public:
   void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *data) {
     DEBUG("glReadPixels\n");
 
-    throw_js(_isolate, "glReadPixels");
-
     if (!data) {
       return;
     }
 
-    Local<ArrayBuffer> shared_buf;
+    //todo: handle bound buffer
+
+    Local<ArrayBuffer> buf;
     Local<Value> buf_view;
+
+    uint32_t pixel_count = static_cast<uint32_t>(width) * static_cast<uint32_t>(height);
 
     switch (type) {
       case GL_UNSIGNED_BYTE:
-        shared_buf = ArrayBuffer::New(_isolate, width * height * sizeof(GLubyte));
-        buf_view = Uint8Array::New(shared_buf, 0, static_cast<size_t>(width * height));
+        buf = ArrayBuffer::New(_isolate, pixel_count * sizeof(GLubyte));
+        buf_view = Uint8Array::New(buf, 0, static_cast<size_t>(pixel_count));
         break;
 
       case GL_UNSIGNED_SHORT:
       case GL_UNSIGNED_SHORT_5_6_5:
       case GL_UNSIGNED_SHORT_4_4_4_4:
       case GL_UNSIGNED_SHORT_5_5_5_1:
-        shared_buf = ArrayBuffer::New(_isolate, data, width * height * sizeof(GLushort));
-        buf_view = Uint16Array::New(shared_buf, 0, static_cast<size_t>(width * height));
+        buf = ArrayBuffer::New(_isolate, pixel_count * sizeof(GLushort));
+        buf_view = Uint16Array::New(buf, 0, static_cast<size_t>(pixel_count));
         break;
 
       case GL_FLOAT:
-        shared_buf = ArrayBuffer::New(_isolate, data, width * height * sizeof(GLfloat));
-        buf_view = Float32Array::New(shared_buf, 0, static_cast<size_t>(width * height));
+        buf = ArrayBuffer::New(_isolate, pixel_count * sizeof(GLfloat));
+        buf_view = Float32Array::New(buf, 0, static_cast<size_t>(pixel_count));
         break;
 
       default:
@@ -604,7 +563,11 @@ public:
         return;
     }
 
-    callMethod("readPixels", { MKI(x), MKI(y), MKI(width), MKI(height), MKI(format), MKI(type), buf_view });
+    TryCatch try_catch(_isolate);
+    auto r = callMethod("readPixels", { MKI(x), MKI(y), MKI(width), MKI(height), MKI(format), MKI(type), buf_view });
+    if (!try_catch.HasCaught() && glGetError() == GL_NO_ERROR) {
+      memcpy(data, buf->GetContents().Data(), buf->ByteLength());
+    }
   }
 
   void glScissor(GLint x, GLint y, GLsizei width, GLsizei height) {
@@ -621,6 +584,8 @@ public:
       DEBUG("glTexImage2D called with unsupported target parameter: %d\n", type);
       return;
     }
+
+    //TODO: handle GL_PIXEL_UNPACK_BUFFER
 
     if (!data) {
       // data may be a null pointer. In this case, texture memory is allocated to accommodate
@@ -645,6 +610,8 @@ public:
                        GLsizei height, GLenum format, GLenum type, const GLvoid *pixels) {
     DEBUG("glTexSubImage2D\n");
 
+    //TODO: handle PIXEL_UNPACK_BUFFER
+
     auto bufs = getTexBuffers(type, width, height, pixels);
 
     callMethod("texSubImage2D", { MKI(target), MKI(level), MKI(xoffset), MKI(yoffset),
@@ -654,25 +621,25 @@ public:
   void glUniform1f(GLint location, GLfloat v0) {
     DEBUG("glUniform1f\n");
 
-    callLocationMethod("uniform1f", location, { MKN(v0) });
+    callLocationMethod("uniform1f", location, { Local<Value>(), MKN(v0) });
   }
 
   void glUniform2f(GLint location, GLfloat v0, GLfloat v1) {
     DEBUG("glUniform2f\n");
 
-    callLocationMethod("uniform2f", location, { MKN(v0), MKN(v1) });
+    callLocationMethod("uniform2f", location, { Local<Value>(), MKN(v0), MKN(v1) });
   }
 
   void glUniform3f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2) {
     DEBUG("glUniform3f\n");
 
-    callLocationMethod("uniform3f", location, { MKN(v0), MKN(v1), MKN(v2) });
+    callLocationMethod("uniform3f", location, { Local<Value>(), MKN(v0), MKN(v1), MKN(v2) });
   }
 
   void glUniform1i(GLint location, GLint v0) {
     DEBUG("glUniform1i\n");
 
-    callLocationMethod("uniform1i", location, { MKN(v0) });
+    callLocationMethod("uniform1i", location, { Local<Value>(), MKN(v0) });
   }
 
   void glUniformMatrix2fv(GLint location, GLsizei matrix_count, GLboolean transpose, const GLfloat *value) {
@@ -747,26 +714,7 @@ public:
   void glDeleteFramebuffers(GLsizei n, const GLuint *framebuffers) {
     DEBUG("glDeleteFramebuffers\n");
 
-    if (!framebuffers || n == 0) {
-      return;
-    }
-
-    if (n < 0) {
-      // set GL_INVALID_VALUE
-      return;
-    }
-
-    for (int j = 0; j < n; ++j) {
-      auto buffer_iter = _framebuffers.find(framebuffers[j]);
-      if (buffer_iter == _framebuffers.end()) {
-        continue;
-      }
-
-      callMethod("deleteBuffer", buffer_iter->second->Get(_isolate));
-      if (glGetError() == GL_NO_ERROR) {
-        _framebuffers.erase(buffer_iter);
-      }
-    }
+    deleteObjects("deleteFramebuffer", _framebuffers, n, framebuffers);
   }
 
   GLenum glCheckFramebufferStatus(GLenum target) {
@@ -832,11 +780,12 @@ public:
   }
 
   Local<Value> callMethod(const string &method_name, const vector<Local<Value>> &args) {
-    return localMethod(method_name)->Call(localContext(), args.size(), (Local<Value>*)args.data());
+    return localMethod(method_name)->Call(localContext(), static_cast<int>(args.size()),
+                                          const_cast<Local<Value>*>(args.data()));
   }
 
   Local<Value> callMethod(const string &method_name, const Local<Value> &arg) {
-    return localMethod(method_name)->Call(localContext(), 1, (Local<Value>*)&arg);
+    return localMethod(method_name)->Call(localContext(), 1, const_cast<Local<Value>*>(&arg));
   }
 
   Local<Value> callMethod(const string &method_name) {
@@ -866,34 +815,37 @@ public:
     Local<ArrayBuffer> shared_buf;
     Local<Value> buf_view;
 
-    DEBUG("calling getTexBuffers: type = %d, width = %d, height = %d, data = %p\n", type, width, height, data);
+    GLsizei item_count = width * height;
 
     switch (type) {
       case GL_UNSIGNED_BYTE:
-        shared_buf = ArrayBuffer::New(_isolate, width * height * sizeof(GLubyte));
-        memcpy(shared_buf->GetContents().Data(), data, width * height * sizeof(GLubyte));
-        buf_view = Uint8Array::New(shared_buf, 0, static_cast<size_t>(width * height));
+        shared_buf = ArrayBuffer::New(_isolate, item_count * sizeof(GLubyte));
+        memcpy(shared_buf->GetContents().Data(), data, item_count * sizeof(GLubyte));
+        buf_view = Uint8Array::New(shared_buf, 0, static_cast<size_t>(item_count));
         break;
 
-//      case GL_UNSIGNED_SHORT:
-//      case GL_UNSIGNED_SHORT_5_6_5:
-//      case GL_UNSIGNED_SHORT_4_4_4_4:
-//      case GL_UNSIGNED_SHORT_5_5_5_1:
-//      case GL_HALF_FLOAT:
-//        shared_buf = ArrayBuffer::New(_isolate, const_cast<void*>(data), width * height * sizeof(GLushort));
-//        buf_view = Uint16Array::New(shared_buf, 0, static_cast<size_t>(width * height));
-//        break;
-//
-//      case GL_UNSIGNED_INT:
-//      case GL_UNSIGNED_INT_24_8:
-//        shared_buf = ArrayBuffer::New(_isolate, const_cast<void*>(data), width * height * sizeof(GLuint));
-//        buf_view = Uint32Array::New(shared_buf, 0, static_cast<size_t>(width * height));
-//        break;
-//
-//      case GL_FLOAT:
-//        shared_buf = ArrayBuffer::New(_isolate, const_cast<void*>(data), width * height * sizeof(GLfloat));
-//        buf_view = Float32Array::New(shared_buf, 0, static_cast<size_t>(width * height));
-//        break;
+      case GL_UNSIGNED_SHORT:
+      case GL_UNSIGNED_SHORT_5_6_5:
+      case GL_UNSIGNED_SHORT_4_4_4_4:
+      case GL_UNSIGNED_SHORT_5_5_5_1:
+      case GL_HALF_FLOAT:
+        shared_buf = ArrayBuffer::New(_isolate, item_count * sizeof(GLushort));
+        memcpy(shared_buf->GetContents().Data(), data, item_count * sizeof(GLubyte));
+        buf_view = Uint16Array::New(shared_buf, 0, static_cast<size_t>(item_count));
+        break;
+
+      case GL_UNSIGNED_INT:
+      case GL_UNSIGNED_INT_24_8:
+        shared_buf = ArrayBuffer::New(_isolate, item_count * sizeof(GLuint));
+        memcpy(shared_buf->GetContents().Data(), data, item_count * sizeof(GLuint));
+        buf_view = Uint32Array::New(shared_buf, 0, static_cast<size_t>(item_count));
+        break;
+
+      case GL_FLOAT:
+        shared_buf = ArrayBuffer::New(_isolate, item_count * sizeof(GLfloat));
+        memcpy(shared_buf->GetContents().Data(), data, item_count * sizeof(GLfloat));
+        buf_view = Float32Array::New(shared_buf, 0, static_cast<size_t>(item_count));
+        break;
 
       default:
         throw_js(_isolate, "unsupported data format for getTexBuffers");
@@ -915,9 +867,7 @@ public:
       return;
     }
 
-    if (pname == GL_COMPILE_STATUS) {
-
-    } else if (pname == GL_INFO_LOG_LENGTH) {
+    if (pname == GL_INFO_LOG_LENGTH) {
       *params = 1024 * 10;
       DEBUG("simulating GL_INFO_LOG_LENGTH parameter...\n");
       return;
@@ -964,19 +914,42 @@ public:
     }
   }
 
-  void callLocationMethod(const string &webgl_method, GLint location_id, const vector<Local<Value>> &args) {
+  void deleteObjects(const string &webgl_method, ObjectStore &store, GLsizei n, const GLuint *objects) {
+    if (!objects || n == 0) {
+      return;
+    }
+
+    if (n < 0) {
+      // set GL_INVALID_VALUE
+      return;
+    }
+
+    for (int j = 0; j < n; ++j) {
+      auto object_iter = store.find(objects[j]);
+      if (object_iter == store.end()) {
+        continue;
+      }
+
+      callMethod(webgl_method, object_iter->second->Get(_isolate));
+      if (glGetError() == GL_NO_ERROR) {
+        store.erase(object_iter);
+      }
+    }
+  }
+
+  void callLocationMethod(const string &webgl_method, GLint location_id, vector<Local<Value>> &&args) {
     auto uni_iter = _uniforms.find(location_id);
     if (uni_iter == _uniforms.end()) {
       // set GL_INVALID_VALUE
       return;
     }
 
-    vector<Local<Value>> m_args = args;
-    m_args.insert(m_args.begin(), uni_iter->second->Get(_isolate));
-    callMethod(webgl_method, m_args);
+    args[0] = uni_iter->second->Get(_isolate);
+    callMethod(webgl_method, args);
   }
 
-  void uniformMatrix(const string &method, int matrix_size, GLint location, GLboolean transpose, const GLfloat *value) {
+  void uniformMatrix(const string &method, int matrix_size, GLint location, GLboolean transpose,
+                     const GLfloat *value) {
     auto loc_iter = _uniforms.find(location);
     if (loc_iter == _uniforms.end()) {
       // set GL_INVALID_VALUE
@@ -992,7 +965,7 @@ public:
     callMethod(method, { loc_iter->second->Get(_isolate), Boolean::New(_isolate, transpose), buf_view });
   }
 
-  static MpvPlayerImpl *singleton() {
+  static MPImpl *singleton() {
     return _singleton;
   }
 
@@ -1001,7 +974,7 @@ public:
 
   /** Data members **/
 
-  static MpvPlayerImpl *_singleton;
+  static MPImpl *_singleton;
   Isolate *_isolate;
   shared_ptr<Persistent<Object>> _canvas = nullptr;
   shared_ptr<Persistent<Object>> _renderingContext = nullptr;
@@ -1020,7 +993,7 @@ public:
   GLuint newId() { return ++_last_id; }
 };
 
-MpvPlayerImpl *MpvPlayerImpl::_singleton = nullptr;
+MPImpl *MPImpl::_singleton = nullptr;
 
 /*************************************************************************************
  * Some helpers
@@ -1037,14 +1010,13 @@ static uv_async_t async_handle, async_wakeup_handle;
  *************************************************************************************/
 
 /**
- * This function is called by libuv when mpv signalizes it has something to draw.
+ * This function is called by libuv to process new lbimpv frames.
  * It is always called on the main thread.
  */
-void async_cb(uv_async_t *handle) {
-  // we should draw some frames!
-  if (MpvPlayerImpl::singleton()) {
+void do_update(uv_async_t *handle) {
+  if (MPImpl::singleton()) {
     DEBUG("mpv_opengl_cb_draw: drawing a frame...");
-    mpv_opengl_cb_draw(MpvPlayerImpl::singleton()->gl(), 0, 300, 200);
+    mpv_opengl_cb_draw(MPImpl::singleton()->gl(), 0, 640, 360);
   }
 }
 
@@ -1052,19 +1024,18 @@ void async_cb(uv_async_t *handle) {
  * This function is called by mpv itself when it has something to draw.
  * It can be called from any thread, so we should ask libuv to call the corresponding callback registered with uv_async_init.
  */
-void mpv_update_callback(void *ctx) {
-  DEBUG("mpv reported it has some new frames!\n");
+void mpv_async_update_cb(void *ctx) {
   uv_async_send(&async_handle);
 }
 
 /**
- * This function is called by libuv when mpv signalizes it has unprocessed events.
+ * This function is called by libuv to process new libmpv events.
  * it is always called on the main thread.
  */
-void async_wakeup_cb(uv_async_t *handle) {
-  if (MpvPlayerImpl::singleton()) {
+void do_wakeup(uv_async_t *handle) {
+  if (MPImpl::singleton()) {
     while (true) {
-      mpv_event *event = mpv_wait_event(MpvPlayerImpl::singleton()->mpv(), 0);
+      mpv_event *event = mpv_wait_event(MPImpl::singleton()->mpv(), 0);
 
       if (event->event_id == MPV_EVENT_NONE || event->event_id == MPV_EVENT_SHUTDOWN) {
         break;
@@ -1080,79 +1051,190 @@ void async_wakeup_cb(uv_async_t *handle) {
  * This function is called by mpv itself when it has unprocessed events.
  * It can be called from any thread, so we should ask libuv to call the corresponding callback registered with uv_async_init.
  */
-void mpv_wakeup_callback(void *ctx) {
+void mpv_async_wakeup_cb(void *ctx) {
   uv_async_send(&async_wakeup_handle);
 }
 
-#define QUOTE(arg) #arg
-#define DEF_FN(FUN_NAME) { QUOTE(gl##FUN_NAME), (void*)web_gl##FUN_NAME }
+/*************************************************************************************
+ * Crazy bunch of wrappers around gl methods on MpvPlayerImpl class
+ *************************************************************************************/
 
-void web_glActiveTexture(GLenum texture) { MpvPlayerImpl::singleton()->glActiveTexture(texture); }
-const GLubyte *web_glGetString(GLenum name) { return MpvPlayerImpl::singleton()->glGetString(name); }
-GLuint web_glCreateProgram() { return MpvPlayerImpl::singleton()->glCreateProgram(); }
-void web_glDeleteProgram(GLuint program) { MpvPlayerImpl::singleton()->glDeleteProgram(program); }
-void web_glGetProgramInfoLog(GLuint program, GLsizei max_length, GLsizei *length, GLchar *info_log) {
-  MpvPlayerImpl::singleton()->glGetProgramInfoLog(program, max_length, length, info_log);
+#define QUOTE(arg) #arg
+#define DEF_FN(FUN_NAME) { QUOTE(gl##FUN_NAME), (void*)GlWrappers::gl##FUN_NAME }
+
+namespace GlWrappers {
+  void glActiveTexture(GLenum texture) { MPImpl::singleton()->glActiveTexture(texture); }
+
+  const GLubyte *glGetString(GLenum name) { return MPImpl::singleton()->glGetString(name); }
+
+  GLuint glCreateProgram() { return MPImpl::singleton()->glCreateProgram(); }
+
+  void glDeleteProgram(GLuint program) { MPImpl::singleton()->glDeleteProgram(program); }
+
+  void glGetProgramInfoLog(GLuint program, GLsizei max_length, GLsizei *length, GLchar *info_log) {
+    MPImpl::singleton()->glGetProgramInfoLog(program, max_length, length, info_log);
+  }
+
+  void glGetProgramiv(GLuint program, GLenum pname, GLint *params) {
+    MPImpl::singleton()->glGetProgramiv(program, pname, params);
+  }
+
+  void glLinkProgram(GLuint program) { MPImpl::singleton()->glLinkProgram(program); }
+
+  void glUseProgram(GLuint program) { MPImpl::singleton()->glUseProgram(program); }
+
+  GLuint glCreateShader(GLenum shader_type) { return MPImpl::singleton()->glCreateShader(shader_type); }
+
+  void glDeleteShader(GLuint shader_id) { MPImpl::singleton()->glDeleteShader(shader_id); }
+
+  void glAttachShader(GLuint program_id, GLuint shader_id) {
+    MPImpl::singleton()->glAttachShader(program_id, shader_id);
+  }
+
+  void glCompileShader(GLuint shader_id) { MPImpl::singleton()->glCompileShader(shader_id); }
+
+  void glBindAttribLocation(GLuint program_id, GLuint index, const GLchar *name) {
+    MPImpl::singleton()->glBindAttribLocation(program_id, index, name);
+  }
+
+  void glBindBuffer(GLenum target, GLuint buffer) { MPImpl::singleton()->glBindBuffer(target, buffer); }
+
+  void glBindTexture(GLenum target, GLuint texture) { MPImpl::singleton()->glBindTexture(target, texture); }
+
+  void glBlendFuncSeparate(GLenum srcRGB, GLenum dstRGB, GLenum srcAplha, GLenum dstAplha) {
+    MPImpl::singleton()->glBlendFuncSeparate(srcRGB, dstRGB, srcAplha, dstAplha);
+  }
+
+  void glBufferData(GLenum target, GLsizeiptr size, const GLvoid *data,
+                        GLenum usage) { MPImpl::singleton()->glBufferData(target, size, data, usage); }
+
+  void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size,
+                           const GLvoid *data) { MPImpl::singleton()->glBufferSubData(target, offset, size, data); }
+
+  void glClear(GLbitfield mask) { MPImpl::singleton()->glClear(mask); }
+
+  void glClearColor(GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha) {
+    MPImpl::singleton()->glClearColor(red, green, blue, alpha);
+  }
+
+  void glDeleteBuffers(GLsizei n, const GLuint *buffers) { MPImpl::singleton()->glDeleteBuffers(n, buffers); }
+
+  void glDeleteTextures(GLsizei n, const GLuint *textures) { MPImpl::singleton()->glDeleteTextures(n, textures); }
+
+  void glEnable(GLenum cap) { MPImpl::singleton()->glEnable(cap); }
+
+  void glDisable(GLenum cap) { MPImpl::singleton()->glDisable(cap); }
+
+  void glDisableVertexAttribArray(GLuint index) { MPImpl::singleton()->glDisableVertexAttribArray(index); }
+
+  void glEnableVertexAttribArray(GLuint index) { MPImpl::singleton()->glEnableVertexAttribArray(index); }
+
+  void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
+    MPImpl::singleton()->glDrawArrays(mode, first, count);
+  }
+
+  void glFinish() { MPImpl::singleton()->glFinish(); }
+
+  void glFlush() { MPImpl::singleton()->glFlush(); }
+
+  void glGenBuffers(GLsizei n, GLuint *buffers) { MPImpl::singleton()->glGenBuffers(n, buffers); }
+
+  void glGenTextures(GLsizei n, GLuint *textures) { MPImpl::singleton()->glGenTextures(n, textures); }
+
+  GLint glGetAttribLocation(GLuint program_id, const GLchar *name) {
+    return MPImpl::singleton()->glGetAttribLocation(program_id, name);
+  }
+
+  GLenum glGetError() { return MPImpl::singleton()->glGetError(); }
+
+  void glGetIntegerv(GLenum pname, GLint *params) { MPImpl::singleton()->glGetIntegerv(pname, params); }
+
+  void glGetShaderInfoLog(GLuint shader_id, GLsizei max_length, GLsizei *length, GLchar *info_log) {
+    MPImpl::singleton()->glGetShaderInfoLog(shader_id, max_length, length, info_log);
+  }
+
+  void glGetShaderiv(GLuint shader_id, GLenum pname, GLint *params) {
+    MPImpl::singleton()->glGetShaderiv(shader_id, pname, params);
+  }
+
+  GLint glGetUniformLocation(GLuint program, const GLchar *name) {
+    return MPImpl::singleton()->glGetUniformLocation(program, name);
+  }
+
+  void glPixelStorei(GLenum pname, GLint param) { MPImpl::singleton()->glPixelStorei(pname, param); }
+
+  void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type,
+                        GLvoid *data) { MPImpl::singleton()->glReadPixels(x, y, width, height, format, type, data); }
+
+  void glShaderSource(GLuint shader_id, GLsizei count, const GLchar **str, const GLint *length) {
+    MPImpl::singleton()->glShaderSource(shader_id, count, str, length);
+  }
+
+  void glScissor(GLint x, GLint y, GLsizei width, GLsizei height) {
+    MPImpl::singleton()->glScissor(x, y, width, height);
+  }
+
+  void glTexImage2D(GLenum target, GLint level, GLint internal_format, GLsizei width, GLsizei height, GLint border,
+                        GLenum format, GLenum type, const GLvoid *data) {
+    MPImpl::singleton()->glTexImage2D(target, level, internal_format, width, height, border, format, type, data);
+  }
+
+  void glTexParameteri(GLenum target, GLenum pname, GLint param) {
+    MPImpl::singleton()->glTexParameteri(target, pname, param);
+  }
+
+  void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height,
+                           GLenum format, GLenum type, const GLvoid *pixels) {
+    MPImpl::singleton()->glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels);
+  }
+
+  void glUniform1f(GLint location, GLfloat v0) { MPImpl::singleton()->glUniform1f(location, v0); }
+
+  void glUniform2f(GLint location, GLfloat v0, GLfloat v1) { MPImpl::singleton()->glUniform2f(location, v0, v1); }
+
+  void glUniform3f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2) {
+    MPImpl::singleton()->glUniform3f(location, v0, v1, v2);
+  }
+
+  void glUniform1i(GLint location, GLint v0) { MPImpl::singleton()->glUniform1i(location, v0); }
+
+  void glUniformMatrix2fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) {
+    MPImpl::singleton()->glUniformMatrix2fv(location, count, transpose, value);
+  }
+
+  void glUniformMatrix3fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) {
+    MPImpl::singleton()->glUniformMatrix3fv(location, count, transpose, value);
+  }
+
+  void glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride,
+                                 const GLvoid *pointer) {
+    MPImpl::singleton()->glVertexAttribPointer(index, size, type, normalized, stride, pointer);
+  }
+
+  void glViewport(GLint x, GLint y, GLsizei width, GLsizei height) {
+    MPImpl::singleton()->glViewport(x, y, width, height);
+  }
+
+  void glBindFramebuffer(GLenum target, GLuint framebuffer) {
+    MPImpl::singleton()->glBindFramebuffer(target, framebuffer);
+  }
+
+  void glGenFramebuffers(GLsizei n, GLuint *ids) { MPImpl::singleton()->glGenFramebuffers(n, ids); }
+
+  void glDeleteFramebuffers(GLsizei n, const GLuint *framebuffers) {
+    MPImpl::singleton()->glDeleteFramebuffers(n, framebuffers);
+  }
+
+  GLenum glCheckFramebufferStatus(GLenum target) { return MPImpl::singleton()->glCheckFramebufferStatus(target); }
+
+  void glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level) {
+    MPImpl::singleton()->glFramebufferTexture2D(target, attachment, textarget, texture, level);
+  }
+
+  void glGetFramebufferAttachmentParameteriv(GLenum target, GLenum attachment, GLenum pname, GLint *params) {
+    MPImpl::singleton()->glGetFramebufferAttachmentParameteriv(target, attachment, pname, params);
+  }
 }
-void web_glGetProgramiv(GLuint program, GLenum pname, GLint *params) {
-  MpvPlayerImpl::singleton()->glGetProgramiv(program, pname, params);
-}
-void web_glLinkProgram(GLuint program) { MpvPlayerImpl::singleton()->glLinkProgram(program); }
-void web_glUseProgram(GLuint program) { MpvPlayerImpl::singleton()->glUseProgram(program); }
-GLuint web_glCreateShader(GLenum shader_type) { return MpvPlayerImpl::singleton()->glCreateShader(shader_type); }
-void web_glDeleteShader(GLuint shader_id) { MpvPlayerImpl::singleton()->glDeleteShader(shader_id); }
-void web_glAttachShader(GLuint program_id, GLuint shader_id) {
-  MpvPlayerImpl::singleton()->glAttachShader(program_id, shader_id);
-}
-void web_glCompileShader(GLuint shader_id) { MpvPlayerImpl::singleton()->glCompileShader(shader_id); }
-void web_glBindAttribLocation(GLuint program_id, GLuint index, const GLchar *name) { MpvPlayerImpl::singleton()->glBindAttribLocation(program_id, index, name); }
-void web_glBindBuffer(GLenum target, GLuint buffer) { MpvPlayerImpl::singleton()->glBindBuffer(target, buffer); }
-void web_glBindTexture(GLenum target, GLuint texture) { MpvPlayerImpl::singleton()->glBindTexture(target, texture); }
-void web_glBlendFuncSeparate(GLenum srcRGB, GLenum dstRGB, GLenum srcAplha, GLenum dstAplha) { MpvPlayerImpl::singleton()->glBlendFuncSeparate(srcRGB, dstRGB, srcAplha, dstAplha); }
-void web_glBufferData(GLenum target, GLsizeiptr size, const GLvoid *data, GLenum usage) { MpvPlayerImpl::singleton()->glBufferData(target, size, data, usage); }
-void web_glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const GLvoid *data) { MpvPlayerImpl::singleton()->glBufferSubData(target, offset, size, data); }
-void web_glClear(GLbitfield mask) { MpvPlayerImpl::singleton()->glClear(mask); }
-void web_glClearColor(GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha) { MpvPlayerImpl::singleton()->glClearColor(red, green, blue, alpha); }
-void web_glDeleteBuffers(GLsizei n, const GLuint *buffers) { MpvPlayerImpl::singleton()->glDeleteBuffers(n, buffers); }
-void web_glDeleteTextures(GLsizei n, const GLuint *textures) { MpvPlayerImpl::singleton()->glDeleteTextures(n, textures); }
-void web_glEnable(GLenum cap) { MpvPlayerImpl::singleton()->glEnable(cap); }
-void web_glDisable(GLenum cap) { MpvPlayerImpl::singleton()->glDisable(cap); }
-void web_glDisableVertexAttribArray(GLuint index) { MpvPlayerImpl::singleton()->glDisableVertexAttribArray(index); }
-void web_glEnableVertexAttribArray(GLuint index) { MpvPlayerImpl::singleton()->glEnableVertexAttribArray(index); }
-void web_glDrawArrays(GLenum mode, GLint first, GLsizei count) { MpvPlayerImpl::singleton()->glDrawArrays(mode, first, count); }
-void web_glFinish() { MpvPlayerImpl::singleton()->glFinish(); }
-void web_glFlush() { MpvPlayerImpl::singleton()->glFlush(); }
-void web_glGenBuffers(GLsizei n, GLuint *buffers) { MpvPlayerImpl::singleton()->glGenBuffers(n, buffers); }
-void web_glGenTextures(GLsizei n, GLuint *textures) { MpvPlayerImpl::singleton()->glGenTextures(n, textures); }
-GLint web_glGetAttribLocation(GLuint program_id, const GLchar *name) { return MpvPlayerImpl::singleton()->glGetAttribLocation(program_id, name); }
-GLenum web_glGetError() { return MpvPlayerImpl::singleton()->glGetError(); }
-void web_glGetIntegerv(GLenum pname, GLint *params) { MpvPlayerImpl::singleton()->glGetIntegerv(pname, params); }
-void web_glGetShaderInfoLog(GLuint shader_id, GLsizei max_length, GLsizei *length, GLchar *info_log) { MpvPlayerImpl::singleton()->glGetShaderInfoLog(shader_id, max_length, length, info_log); }
-void web_glGetShaderiv(GLuint shader_id, GLenum pname, GLint *params) { MpvPlayerImpl::singleton()->glGetShaderiv(shader_id, pname, params); }
-GLint web_glGetUniformLocation(GLuint program, const GLchar *name) { return MpvPlayerImpl::singleton()->glGetUniformLocation(program, name); }
-void web_glPixelStorei(GLenum pname, GLint param) { MpvPlayerImpl::singleton()->glPixelStorei(pname, param); }
-void web_glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *data) { MpvPlayerImpl::singleton()->glReadPixels(x, y, width, height, format, type, data); }
-void web_glShaderSource(GLuint shader_id, GLsizei count, const GLchar **str, const GLint *length) {
-  MpvPlayerImpl::singleton()->glShaderSource(shader_id, count, str, length);
-}
-void web_glScissor(GLint x, GLint y, GLsizei width, GLsizei height) { MpvPlayerImpl::singleton()->glScissor(x, y, width, height); }
-void web_glTexImage2D(GLenum target, GLint level, GLint internal_format, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid *data) { MpvPlayerImpl::singleton()->glTexImage2D(target, level, internal_format, width, height, border, format, type, data); }
-void web_glTexParameteri(GLenum target, GLenum pname, GLint param) { MpvPlayerImpl::singleton()->glTexParameteri(target, pname, param); }
-void web_glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels) { MpvPlayerImpl::singleton()->glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels); }
-void web_glUniform1f(GLint location, GLfloat v0) { MpvPlayerImpl::singleton()->glUniform1f(location, v0); }
-void web_glUniform2f(GLint location, GLfloat v0, GLfloat v1) { MpvPlayerImpl::singleton()->glUniform2f(location, v0, v1); }
-void web_glUniform3f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2) { MpvPlayerImpl::singleton()->glUniform3f(location, v0, v1, v2); }
-void web_glUniform1i(GLint location, GLint v0) { MpvPlayerImpl::singleton()->glUniform1i(location, v0); }
-void web_glUniformMatrix2fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { MpvPlayerImpl::singleton()->glUniformMatrix2fv(location, count, transpose, value); }
-void web_glUniformMatrix3fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { MpvPlayerImpl::singleton()->glUniformMatrix3fv(location, count, transpose, value); }
-void web_glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const GLvoid * pointer) { MpvPlayerImpl::singleton()->glVertexAttribPointer(index, size, type, normalized, stride, pointer); }
-void web_glViewport(GLint x, GLint y, GLsizei width, GLsizei height) { MpvPlayerImpl::singleton()->glViewport(x, y, width, height); }
-void web_glBindFramebuffer(GLenum target, GLuint framebuffer) { MpvPlayerImpl::singleton()->glBindFramebuffer(target, framebuffer); }
-void web_glGenFramebuffers(GLsizei n, GLuint *ids) { MpvPlayerImpl::singleton()->glGenFramebuffers(n, ids); }
-void web_glDeleteFramebuffers(GLsizei n, const GLuint *framebuffers) { MpvPlayerImpl::singleton()->glDeleteFramebuffers(n, framebuffers); }
-GLenum web_glCheckFramebufferStatus(GLenum target) { return MpvPlayerImpl::singleton()->glCheckFramebufferStatus(target); }
-void web_glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level) { MpvPlayerImpl::singleton()->glFramebufferTexture2D(target, attachment, textarget, texture, level); }
-void web_glGetFramebufferAttachmentParameteriv(GLenum target, GLenum attachment, GLenum pname, GLint *params) { MpvPlayerImpl::singleton()->glGetFramebufferAttachmentParameteriv(target, attachment, pname, params); }
 
 static map<string, void*> gl_func_map = {
   DEF_FN(ActiveTexture),
@@ -1228,13 +1310,11 @@ static void *get_proc_address(void *ctx, const char *name) {
 }
 
 MpvPlayer::MpvPlayer(Isolate *isolate,
-                     shared_ptr<Persistent<Object>> canvas,
-                     shared_ptr<Persistent<Object>> renderingContext) : ObjectWrap() {
-  d = new MpvPlayerImpl(isolate, canvas, renderingContext);
-}
+                     const shared_ptr<Persistent<Object>> &canvas,
+                     const shared_ptr<Persistent<Object>> &renderingContext) :
+    ObjectWrap(),
+    d(new MPImpl(isolate, canvas, renderingContext)) {
 
-MpvPlayer::~MpvPlayer() {
-  delete d;
 }
 
 /**
@@ -1253,8 +1333,9 @@ void MpvPlayer::Init(Local<Object> exports) {
   constructor.Reset(isolate, tpl->GetFunction());
   exports->Set(String::NewFromUtf8(isolate, MPV_PLAYER_CLASS), tpl->GetFunction());
 
-  uv_async_init(uv_default_loop(), &async_handle, async_cb);
-  uv_async_init(uv_default_loop(), &async_wakeup_handle, async_wakeup_cb);
+  // initialize libuv async callbacks
+  uv_async_init(uv_default_loop(), &async_handle, do_update);
+  uv_async_init(uv_default_loop(), &async_wakeup_handle, do_wakeup);
 }
 
 /**
@@ -1265,55 +1346,62 @@ void MpvPlayer::Init(Local<Object> exports) {
  void MpvPlayer::New(const FunctionCallbackInfo<Value> &args) {
   Isolate *isolate = args.GetIsolate();
 
-  if (args.IsConstructCall()) {
-    if (args.Length() < 1) {
-      isolate->ThrowException(
-        Exception::TypeError(String::NewFromUtf8(isolate, "MpvPlayer: invalid number of arguments for constructor")));
-      return;
-    }
-
-    Local<Value> arg = args[0];
-    if (!arg->IsObject()) {
-      isolate->ThrowException(
-        Exception::TypeError(String::NewFromUtf8(isolate, "MpvPlayer: invalid argument, canvas DOM element expected")));
-      return;
-    }
-
-    // extract object pointing to canvas
-    auto canvas = make_shared<Persistent<Object>>(isolate, arg->ToObject());
-
-    // create rendering context on our canvas
-    Local<Object> fGetContext = canvas->Get(isolate)->Get(String::NewFromUtf8(isolate, "getContext"))->ToObject();
-    if (fGetContext.IsEmpty() || fGetContext->IsNull() || fGetContext->IsUndefined()) {
-      throw_js(isolate, "MpvPlayer::create: failed to create WebGL rendering context");
-      return;
-    }
-
-    // and call canvas.getContext to get webgl rendering context
-    Local<Value> getContextArgs[] = {
-      String::NewFromUtf8(isolate, "webgl2")
-    };
-    TryCatch tryCatch;
-    Local<Value> getContextResult = Local<Function>::Cast(fGetContext)->Call(canvas->Get(isolate), 1, getContextArgs);
-
-    if (tryCatch.HasCaught()) {
-      tryCatch.ReThrow();
-      return;
-    }
-
-    if (getContextResult.IsEmpty() || getContextResult->IsNull() || getContextResult->IsUndefined()) {
-      throw_js(isolate, "MpvPlayer::create: failed to initialize WebGL");
-      return;
-    }
-    auto webglContext = make_shared<Persistent<Object>>(isolate, getContextResult->ToObject());
-
-    auto playerObject = new MpvPlayer(isolate, canvas, webglContext);
-    playerObject->Wrap(args.This());
-    args.GetReturnValue().Set(args.This());
-  } else {
+  if (!args.IsConstructCall()) {
     // our constructor function is called as a function, without new
     isolate->ThrowException(String::NewFromUtf8(isolate, "MpvPlayer constructor should be called with new"));
+    return;
   }
+
+  if (args.Length() < 1) {
+    isolate->ThrowException(
+      Exception::TypeError(String::NewFromUtf8(isolate, "MpvPlayer: invalid number of arguments for constructor: canvas DOM element expected")));
+    return;
+  }
+
+  Local<Value> arg = args[0];
+  if (!arg->IsObject()) {
+    isolate->ThrowException(
+      Exception::TypeError(String::NewFromUtf8(isolate, "MpvPlayer: invalid argument, canvas DOM element expected")));
+    return;
+  }
+
+  // extract object pointing to canvas
+  auto canvas = make_shared<Persistent<Object>>(isolate, arg->ToObject());
+
+  // find getContext method on canvas object
+  Local<Object> get_context_func = canvas->Get(isolate)->Get(String::NewFromUtf8(isolate, "getContext"))->ToObject();
+  if (get_context_func.IsEmpty() || get_context_func->IsUndefined()) {
+    throw_js(isolate, "MpvPlayer::create: failed to create WebGL rendering context");
+    return;
+  }
+
+  // and call canvas.getContext to get webgl rendering context
+  Local<Object> context_opts = Object::New(isolate);
+  context_opts->Set(String::NewFromUtf8(isolate, "premultipliedAlpha"), Boolean::New(isolate, false));
+  context_opts->Set(String::NewFromUtf8(isolate, "alpha"), Boolean::New(isolate, false));
+  context_opts->Set(String::NewFromUtf8(isolate, "antialias"), Boolean::New(isolate, false));
+  Local<Value> get_context_args[] = { String::NewFromUtf8(isolate, "webgl2"), context_opts };
+  TryCatch try_catch(isolate);
+
+  MaybeLocal<Value> maybe_context = get_context_func->CallAsFunction(isolate->GetCurrentContext(),
+                                                                     canvas->Get(isolate), 1, get_context_args);
+
+  if (try_catch.HasCaught()) {
+    try_catch.ReThrow();
+    return;
+  }
+  if (maybe_context.IsEmpty() ||
+      (maybe_context.ToLocalChecked()->IsNull() || maybe_context.ToLocalChecked()->IsUndefined())) {
+    throw_js(isolate, "MpvPlayer::create: failed to initialize WebGL");
+    return;
+  }
+
+  // create C++ player object
+  auto context_pers = make_shared<Persistent<Object>>(isolate, maybe_context.ToLocalChecked()->ToObject(isolate));
+  auto player_obj = new MpvPlayer(isolate, canvas, context_pers);
+  player_obj->Wrap(args.This());
+
+  args.GetReturnValue().Set(args.This());
 }
 
 /**
@@ -1324,46 +1412,47 @@ void MpvPlayer::Create(const FunctionCallbackInfo<Value> &args) {
   Isolate *isolate = args.GetIsolate();
   MpvPlayer *self = ObjectWrap::Unwrap<MpvPlayer>(args.Holder());
 
+  if (self->d->_mpv) {
+    throw_js(isolate, "MpvPlayer::create: player already created, cannot call this method twice on the same object");
+    return;
+  }
+
+  // create mpv object
   self->d->_mpv = mpv_create();
   if (!self->d->_mpv) {
-    isolate->ThrowException(
-      Exception::Error(String::NewFromUtf8(isolate, "MpvPlayer::create: falied to initialize mpv"))
-    );
+    throw_js(isolate, "MpvPlayer::create: failed to initialize mpv");
     return;
   }
 
-  mpv_request_log_messages(self->d->_mpv, "debug");
-  mpv_set_wakeup_callback(self->d->_mpv, (void (*)(void*))mpv_wakeup_callback, self);
+  // set default paramers
+  mpv_request_log_messages(self->d->_mpv, "info");
+  mpv_set_wakeup_callback(self->d->_mpv, mpv_async_wakeup_cb, self);
 
+  // initialize mpv
   if (mpv_initialize(self->d->_mpv) < 0) {
-    isolate->ThrowException(
-      Exception::Error(String::NewFromUtf8(isolate, "MpvPlayer::create: falied to initialize mpv"))
-    );
+    throw_js(isolate, "MpvPlayer::create: failed to initialize mpv");
     return;
   }
 
+  // set default options
   mpv_set_option_string(self->d->_mpv, "opengl-hwdec-interop", "auto");
   mpv_set_option_string(self->d->_mpv, "vo", "opengl-cb");
   mpv_set_option_string(self->d->_mpv, "hwdec", "auto");
   mpv_set_option_string(self->d->_mpv, "sub-auto", "no");
 
+  // initialize opengl callback api
   self->d->_mpv_gl = static_cast<mpv_opengl_cb_context*>(mpv_get_sub_api(self->d->_mpv, MPV_SUB_API_OPENGL_CB));
   if (!self->d->_mpv_gl) {
-    isolate->ThrowException(
-      Exception::Error(String::NewFromUtf8(isolate, "MpvPlayer::create: falied to initialize opengl subapi"))
-    );
+    throw_js(isolate, "MpvPlayer::create: falied to initialize opengl subapi");
     return;
   }
 
-  int res = mpv_opengl_cb_init_gl(self->d->_mpv_gl, nullptr, get_proc_address, self);
-  if (res < 0) {
-    isolate->ThrowException(
-      Exception::Error(String::NewFromUtf8(isolate, "MpvPlayer::create: falied to initialize WebGL functions"))
-    );
+  if (mpv_opengl_cb_init_gl(self->d->_mpv_gl, nullptr, get_proc_address, self) < 0) {
+    throw_js(isolate, "MpvPlayer::create: falied to initialize WebGL functions");
     return;
   }
 
-  mpv_opengl_cb_set_update_callback(self->d->_mpv_gl, mpv_update_callback, nullptr);
+  mpv_opengl_cb_set_update_callback(self->d->_mpv_gl, mpv_async_update_cb, nullptr);
 }
 
 void MpvPlayer::Command(const FunctionCallbackInfo<Value> &args) {
@@ -1371,7 +1460,7 @@ void MpvPlayer::Command(const FunctionCallbackInfo<Value> &args) {
   MpvPlayer *self = ObjectWrap::Unwrap<MpvPlayer>(args.Holder());
 
   if (!self->d->_mpv) {
-    throw_js(i, "MpvPlayer: calling a method on unintialized instance");
+    throw_js(i, "MpvPlayer::command: player object is not initialized");
     return;
   }
 
@@ -1380,6 +1469,7 @@ void MpvPlayer::Command(const FunctionCallbackInfo<Value> &args) {
     return;
   }
 
+  // convert list of strings to mpv command
   const char *mpv_args[args.Length() + 1];
   string mpv_args_c[args.Length()];
   for (int j = 0; j < args.Length(); ++j) {
@@ -1392,6 +1482,7 @@ void MpvPlayer::Command(const FunctionCallbackInfo<Value> &args) {
   }
   mpv_args[args.Length()] = nullptr;
 
+  // send command to mpv
   int mpv_result = mpv_command(self->d->_mpv, mpv_args);
   if (mpv_result != MPV_ERROR_SUCCESS) {
     throw_js(i, mpv_error_string(mpv_result));

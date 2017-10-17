@@ -8,8 +8,8 @@ let mpv = require('../../module/build/Release/mpv-webgl.node');
 (window as any).mpv = mpv;
 
 let canvas = document.createElement('canvas');
-canvas.style.width = "300px";
-canvas.style.height = "200px";
+canvas.style.width = "640px";
+canvas.style.height = "360px";
 document.body.appendChild(canvas);
 
 let p: any = new (window as any).mpv.MpvPlayer(canvas);

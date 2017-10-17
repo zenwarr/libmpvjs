@@ -7,21 +7,20 @@
 
 struct mpv_handle;
 struct mpv_opengl_cb_context;
-class MpvPlayerImpl;
+class MPImpl;
 
 class MpvPlayer : public node::ObjectWrap {
 public:
   static void Init(v8::Local<v8::Object> exports);
 
 private:
-  MpvPlayerImpl *d;
+  std::unique_ptr<MPImpl> d;
   
   MpvPlayer(v8::Isolate *isolate,
-            std::shared_ptr<v8::Persistent<v8::Object>> canvas,
-            std::shared_ptr<v8::Persistent<v8::Object>> renderingContext
+            const std::shared_ptr<v8::Persistent<v8::Object>> &canvas,
+            const std::shared_ptr<v8::Persistent<v8::Object>> &renderingContext
   );
   MpvPlayer(const MpvPlayer &); // disable copying
-  ~MpvPlayer();
 
   static void New(const v8::FunctionCallbackInfo<v8::Value> &args);
   static void Create(const v8::FunctionCallbackInfo<v8::Value> &args);
