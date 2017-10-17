@@ -17,8 +17,8 @@ private:
   MpvPlayerImpl *d;
   
   MpvPlayer(v8::Isolate *isolate,
-            v8::Persistent<v8::Object> *canvas,
-            v8::Persistent<v8::Object> *renderingContext
+            std::shared_ptr<v8::Persistent<v8::Object>> canvas,
+            std::shared_ptr<v8::Persistent<v8::Object>> renderingContext
   );
   MpvPlayer(const MpvPlayer &); // disable copying
   ~MpvPlayer();

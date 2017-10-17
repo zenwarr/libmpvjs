@@ -2,6 +2,7 @@
 
 #include <node.h>
 #include <string>
+#include <memory>
 
 #define BUILD_DEBUG
 
@@ -24,4 +25,5 @@ std::string string_to_cc(const v8::Local<v8::Value> &str);
 /**
  * Gets a method with given name from v8::Object
  */
-v8::Local<v8::Function> get_method(v8::Isolate *isolate, v8::Persistent<v8::Object> *obj, const char *method_name);
+v8::Local<v8::Function> get_method(v8::Isolate *isolate, std::shared_ptr<v8::Persistent<v8::Object>> obj,
+                                   const char *method_name);
