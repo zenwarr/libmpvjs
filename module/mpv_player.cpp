@@ -70,14 +70,12 @@ public:
         break;
 
       case GL_EXTENSIONS:
-        result = "";
+        result = "GL_ARB_framebuffer_object";
         break;
 
       default:
         result = string_to_cc(callMethod("getParameter", MKN(name)));
     }
-
-    DEBUG("Resulting glGetString value: %s\n", result.c_str());
 
     if (!result.empty()) {
       gl_props[name] = result;
@@ -209,7 +207,7 @@ public:
     }
 
     if (count > 1) {
-      DEBUG("Multiple GLSL shader files are not supported\n");
+      _throw_js("glShaderSource: Multiple GLSL shader files are not supported");
       return;
     }
 
@@ -238,6 +236,10 @@ public:
 
   void glBindBuffer(GLenum target, GLuint buffer) {
     DEBUG("glBindBuffer\n");
+
+    if (target == GL_PIXEL_UNPACK_BUFFER) {
+      DEBUG("binding a buffer to GL_PIXEL_UNPACK_BUFFER");
+    }
 
     if (buffer == 0) {
       callMethod("bindBuffer", { MKI(target), Null(_isolate) });
@@ -487,7 +489,7 @@ public:
         } else if (r->IsNumber()) {
           *params = static_cast<GLint>(r->IntegerValue());
         } else {
-          DEBUG("glGetIntegerv: unexpected return type\n");
+          _throw_js("glGetIntegerv: unexpected return type");
         }
     }
   }
@@ -521,7 +523,16 @@ public:
   void glPixelStorei(GLenum pname, GLint param) {
     DEBUG("glPixelStorei\n");
 
-    DEBUG("glPixelStorei called with pname = %d and param = %d\n", pname, param);
+    if (pname == GL_UNPACK_ALIGNMENT) {
+      DEBUG("updaing unpack alignment, setting it to %d\n", param);
+      unpack_alignment = param;
+      // set GL_NO_ERROR
+      return;
+    } else if (pname == GL_UNPACK_ROW_LENGTH) {
+      _throw_js(("glPixelStorei called with unsupported pname = " + to_string(param)).c_str());
+      return;
+    }
+
     callMethod("pixelStorei", { MKI(pname), MKI(param) });
   }
 
@@ -559,7 +570,7 @@ public:
         break;
 
       default:
-        DEBUG("glReadPixels: unsupported data format %d", type);
+        _throw_js(("glReadPixels: unsupported data format = " + to_string(type)).c_str());
         return;
     }
 
@@ -581,7 +592,7 @@ public:
     DEBUG("glTexImage2D\n");
 
     if (target != GL_TEXTURE_2D) {
-      DEBUG("glTexImage2D called with unsupported target parameter: %d\n", type);
+      _throw_js(("glTexImage2D: unsupported target = " + to_string(target)).c_str());
       return;
     }
 
@@ -593,10 +604,10 @@ public:
       callMethod("texImage2D", { MKI(target), MKI(level), MKI(internal_format), MKI(width),
                                  MKI(height), MKI(border), MKI(format), MKI(type), Null(_isolate) });
     } else {
-      auto bufs = getTexBuffers(type, width, height, data);
+      auto bufs = getTexBuffers(type, format, width, height, data);
 
       callMethod("texImage2D", { MKI(target), MKI(level), MKI(internal_format), MKI(width),
-                                 MKI(height), MKI(border), MKI(format), MKI(type), bufs.second });
+                                 MKI(height), MKI(border), MKI(format), MKI(type), bufs.second, MKI(0) });
     }
   }
 
@@ -612,7 +623,7 @@ public:
 
     //TODO: handle PIXEL_UNPACK_BUFFER
 
-    auto bufs = getTexBuffers(type, width, height, pixels);
+    auto bufs = getTexBuffers(type, format, width, height, pixels);
 
     callMethod("texSubImage2D", { MKI(target), MKI(level), MKI(xoffset), MKI(yoffset),
                                   MKI(width), MKI(height), MKI(format), MKI(type), bufs.second });
@@ -646,7 +657,7 @@ public:
     DEBUG("glUniformMatrix2fv\n");
 
     if (matrix_count != 1) {
-      DEBUG("glUniformMatrix2fv called with unsupported parameter");
+      _throw_js(("glUniformMatrix2fv: unsupported parameter matrix_count = " + to_string(matrix_count)).c_str());
       return;
     }
 
@@ -657,7 +668,7 @@ public:
     DEBUG("glUniformMatrix3fv\n");
 
     if (matrix_count != 1) {
-      DEBUG("glUniformMatrix2fv called with unsupported parameter");
+      _throw_js(("glUniformMatrix3fv: unsupported parameter matrix_count = " + to_string(matrix_count)).c_str());
       return;
     }
 
@@ -683,6 +694,11 @@ public:
 
   void glBindFramebuffer(GLenum target, GLuint framebuffer) {
     DEBUG("glBindFramebuffer\n");
+
+    if (framebuffer == 0) {
+      callMethod("bindFramebuffer", { MKI(target), Null(_isolate) });
+      return;
+    }
 
     auto fb_iter = _framebuffers.find(framebuffer);
     if (fb_iter == _framebuffers.end()) {
@@ -772,7 +788,8 @@ public:
     // if not, get the method from rendering context and cache it
     auto method = get_method(_isolate, _renderingContext, method_name.c_str());
     if (method.IsEmpty() || method->IsNull() || method->IsUndefined()) {
-      DEBUG("failed to get context method %s\n", method_name.c_str());
+      _throw_js(("failed to get rendering context method " + method_name).c_str());
+      return shared_ptr<Persistent<Function>>();
     }
     auto pers = make_shared<Persistent<Function>>(_isolate, method);
     _webgl_methods[method_name] = pers;
@@ -810,49 +827,111 @@ public:
     return 0;
   }
 
-  pair<Local<ArrayBuffer>, Local<Value>> getTexBuffers(GLenum type, GLsizei width,
+  uint32_t alignToUnpackBoundary(uint32_t value) {
+    return (value + unpack_alignment - 1) & ~(unpack_alignment - 1);
+  }
+
+  static size_t bytesPerPixel(GLenum type, GLenum format) {
+    size_t type_c = 0, format_c = 0;
+
+    switch (type) {
+      case GL_UNSIGNED_INT_2_10_10_10_REV:        return 4;
+      case GL_UNSIGNED_SHORT_5_6_5:               return 2;
+      case GL_UNSIGNED_SHORT_8_8_APPLE:           return 2;
+      case GL_UNSIGNED_SHORT_8_8_REV_APPLE:       return 2;
+    }
+
+    switch (type) {
+      case GL_UNSIGNED_BYTE:                      type_c = 1; break;
+      case GL_UNSIGNED_SHORT:                     type_c = 2; break;
+      case GL_FLOAT:                              type_c = 4; break;
+      default:                                    return 0;
+    }
+
+    switch (format) {
+      case GL_RED:
+      case GL_RED_INTEGER:
+      case GL_LUMINANCE:
+        format_c = 1;
+        break;
+
+      case GL_RG:
+      case GL_RG_INTEGER:
+      case GL_LUMINANCE_ALPHA:
+        format_c = 2;
+        break;
+
+      case GL_RGB:
+      case GL_RGB_INTEGER:
+        format_c = 3;
+        break;
+
+      case GL_RGBA:
+      case GL_RGBA_INTEGER:
+        format_c = 4;
+        break;
+
+      default:
+        return 0;
+    }
+
+    return type_c * format_c;
+  }
+
+  pair<Local<ArrayBuffer>, Local<Value>> getTexBuffers(GLenum type, GLenum format, GLsizei width,
                                                              GLsizei height, const GLvoid *data) {
-    Local<ArrayBuffer> shared_buf;
+    Local<ArrayBuffer> buf;
     Local<Value> buf_view;
 
     GLsizei item_count = width * height;
 
     switch (type) {
-      case GL_UNSIGNED_BYTE:
-        shared_buf = ArrayBuffer::New(_isolate, item_count * sizeof(GLubyte));
-        memcpy(shared_buf->GetContents().Data(), data, item_count * sizeof(GLubyte));
-        buf_view = Uint8Array::New(shared_buf, 0, static_cast<size_t>(item_count));
-        break;
+      case GL_UNSIGNED_BYTE: {
+        buf = ArrayBuffer::New(_isolate, width * sizeof(GLubyte) * height);
 
-      case GL_UNSIGNED_SHORT:
-      case GL_UNSIGNED_SHORT_5_6_5:
-      case GL_UNSIGNED_SHORT_4_4_4_4:
-      case GL_UNSIGNED_SHORT_5_5_5_1:
-      case GL_HALF_FLOAT:
-        shared_buf = ArrayBuffer::New(_isolate, item_count * sizeof(GLushort));
-        memcpy(shared_buf->GetContents().Data(), data, item_count * sizeof(GLubyte));
-        buf_view = Uint16Array::New(shared_buf, 0, static_cast<size_t>(item_count));
-        break;
+        size_t row_bytes = alignToUnpackBoundary(width * sizeof(GLubyte));
+        if (row_bytes == width * sizeof(GLubyte)) {
+          memcpy(buf->GetContents().Data(), data, buf->ByteLength());
+        } else {
+          auto buf_data = static_cast<GLubyte*>(buf->GetContents().Data());
+          auto src_data = static_cast<const GLubyte*>(data);
+          for (size_t j = 0; j < height; ++j) {
+            memcpy(buf_data + (width * sizeof(GLubyte) * j), src_data + row_bytes * j, width * sizeof(GLubyte));
+          }
+        }
 
-      case GL_UNSIGNED_INT:
-      case GL_UNSIGNED_INT_24_8:
-        shared_buf = ArrayBuffer::New(_isolate, item_count * sizeof(GLuint));
-        memcpy(shared_buf->GetContents().Data(), data, item_count * sizeof(GLuint));
-        buf_view = Uint32Array::New(shared_buf, 0, static_cast<size_t>(item_count));
-        break;
+        buf_view = Uint8Array::New(buf, 0, static_cast<size_t>(width * height));
+      } break;
 
-      case GL_FLOAT:
-        shared_buf = ArrayBuffer::New(_isolate, item_count * sizeof(GLfloat));
-        memcpy(shared_buf->GetContents().Data(), data, item_count * sizeof(GLfloat));
-        buf_view = Float32Array::New(shared_buf, 0, static_cast<size_t>(item_count));
-        break;
+//      case GL_UNSIGNED_SHORT:
+//      case GL_UNSIGNED_SHORT_5_6_5:
+//      case GL_UNSIGNED_SHORT_4_4_4_4:
+//      case GL_UNSIGNED_SHORT_5_5_5_1:
+//      case GL_HALF_FLOAT:
+//        buf = ArrayBuffer::New(_isolate, item_count * sizeof(GLushort));
+//        memcpy(buf->GetContents().Data(), data, item_count * sizeof(GLubyte));
+//        buf_view = Uint16Array::New(buf, 0, static_cast<size_t>(item_count));
+//        break;
+//
+//      case GL_UNSIGNED_INT:
+//      case GL_UNSIGNED_INT_24_8:
+//        buf = ArrayBuffer::New(_isolate, item_count * sizeof(GLuint));
+//        memcpy(buf->GetContents().Data(), data, item_count * sizeof(GLuint));
+//        buf_view = Uint32Array::New(buf, 0, static_cast<size_t>(item_count));
+//        break;
+//
+//      case GL_FLOAT:
+//        buf = ArrayBuffer::New(_isolate, item_count * sizeof(GLfloat));
+//        memcpy(buf->GetContents().Data(), data, item_count * sizeof(GLfloat));
+//        buf_view = Float32Array::New(buf, 0, static_cast<size_t>(item_count));
+//        break;
 
       default:
-        throw_js(_isolate, "unsupported data format for getTexBuffers");
-        DEBUG("glTextImage2D: unsupported data format %d", type);
+        _throw_js(("initializing texture buffers: unsupported data format for getTexBuffers: type = "
+                   + to_string(type) + ", format = " + to_string(format)).c_str());
     }
 
-    return { shared_buf, buf_view };
+    return { buf, buf_view };
   }
 
   void getObjectiv(const char *webgl_method, const ObjectStore &store, GLuint object_id,
@@ -871,6 +950,10 @@ public:
       *params = 1024 * 10;
       DEBUG("simulating GL_INFO_LOG_LENGTH parameter...\n");
       return;
+    } else if (pname == GL_SHADER_SOURCE_LENGTH || pname == GL_ACTIVE_UNIFORM_MAX_LENGTH
+               || pname == GL_ACTIVE_ATTRIBUTE_MAX_LENGTH) {
+      _throw_js(("getting shader or program paratemer: unsupported pname value = " + to_string(pname)).c_str());
+      return;
     }
 
     auto result = callMethod(webgl_method, { obj_iter->second->Get(_isolate), MKI(pname) } );
@@ -885,7 +968,8 @@ public:
         *params = static_cast<GLint>(maybe_bool.ToChecked());
       }
     } else {
-      DEBUG("getProgramParameter with pname = %d: returned value is not an integer\n", pname);
+      _throw_js(("getting shader or program paramater: returned value is not an integer and not an boolean, pname = "
+                 + to_string(pname)).c_str());
     }
   }
 
@@ -965,6 +1049,10 @@ public:
     callMethod(method, { loc_iter->second->Get(_isolate), Boolean::New(_isolate, transpose), buf_view });
   }
 
+  void _throw_js(const char *msg) {
+    throw_js(_isolate, msg);
+  }
+
   static MPImpl *singleton() {
     return _singleton;
   }
@@ -989,6 +1077,7 @@ public:
   ObjectStore _framebuffers;
   map<GLint, shared_ptr<Persistent<Value>>> _uniforms;
   GLuint _last_id = 0;
+  int unpack_alignment = 1;
   
   GLuint newId() { return ++_last_id; }
 };
@@ -1015,8 +1104,8 @@ static uv_async_t async_handle, async_wakeup_handle;
  */
 void do_update(uv_async_t *handle) {
   if (MPImpl::singleton()) {
-    DEBUG("mpv_opengl_cb_draw: drawing a frame...");
-    mpv_opengl_cb_draw(MPImpl::singleton()->gl(), 0, 640, 360);
+    DEBUG("mpv_opengl_cb_draw: drawing a frame...\n");
+    mpv_opengl_cb_draw(MPImpl::singleton()->gl(), 0, 1280, -720);
   }
 }
 
@@ -1377,7 +1466,7 @@ void MpvPlayer::Init(Local<Object> exports) {
 
   // and call canvas.getContext to get webgl rendering context
   Local<Object> context_opts = Object::New(isolate);
-  context_opts->Set(String::NewFromUtf8(isolate, "premultipliedAlpha"), Boolean::New(isolate, false));
+  context_opts->Set(String::NewFromUtf8(isolate, "premultipliedAlpha"), Boolean::New(isolate, true));
   context_opts->Set(String::NewFromUtf8(isolate, "alpha"), Boolean::New(isolate, false));
   context_opts->Set(String::NewFromUtf8(isolate, "antialias"), Boolean::New(isolate, false));
   Local<Value> get_context_args[] = { String::NewFromUtf8(isolate, "webgl2"), context_opts };
@@ -1425,7 +1514,7 @@ void MpvPlayer::Create(const FunctionCallbackInfo<Value> &args) {
   }
 
   // set default paramers
-  mpv_request_log_messages(self->d->_mpv, "info");
+  mpv_request_log_messages(self->d->_mpv, "debug");
   mpv_set_wakeup_callback(self->d->_mpv, mpv_async_wakeup_cb, self);
 
   // initialize mpv
@@ -1435,10 +1524,12 @@ void MpvPlayer::Create(const FunctionCallbackInfo<Value> &args) {
   }
 
   // set default options
-  mpv_set_option_string(self->d->_mpv, "opengl-hwdec-interop", "auto");
   mpv_set_option_string(self->d->_mpv, "vo", "opengl-cb");
   mpv_set_option_string(self->d->_mpv, "hwdec", "auto");
   mpv_set_option_string(self->d->_mpv, "sub-auto", "no");
+  mpv_set_option_string(self->d->_mpv, "video-unscaled", "yes");
+  mpv_set_option_string(self->d->_mpv, "video-zoom", "0");
+  mpv_set_option_string(self->d->_mpv, "input-vo-keyboard", "no");
 
   // initialize opengl callback api
   self->d->_mpv_gl = static_cast<mpv_opengl_cb_context*>(mpv_get_sub_api(self->d->_mpv, MPV_SUB_API_OPENGL_CB));
