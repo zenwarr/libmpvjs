@@ -3,7 +3,7 @@
     {
       "target_name": "mpv-webgl",
       "sources": [
-        "main.cpp", "mpv_player.cpp", "helpers.cpp"
+        "main.cpp", "mpv_player.cpp", "helpers.cpp", "mpv_node.cpp"
       ],
       "libraries": [
         "-L/home/victor/devel/mpv-build/mpv/build/",
@@ -16,7 +16,9 @@
         "-l:libavdevice.a",
         "-l:libswscale.a",
         "-l:libswresample.a",
-        "-lpulse"
+        "-l:libass.a",
+        "-lpulse",
+        "-lfribidi"
       ],
       "ldflags": [ "-Wl,-Bsymbolic" ],
       "cxxflags": [ "-fexceptions" ]

@@ -11,6 +11,7 @@
 #include <cstring>
 #include "mpv_player.h"
 #include "helpers.h"
+#include "mpv_node.h"
 
 using namespace v8;
 using namespace std;
@@ -1418,6 +1419,8 @@ void MpvPlayer::Init(Local<Object> exports) {
 
   NODE_SET_PROTOTYPE_METHOD(tpl, "create", Create);
   NODE_SET_PROTOTYPE_METHOD(tpl, "command", Command);
+  NODE_SET_PROTOTYPE_METHOD(tpl, "getProperty", GetProperty);
+  NODE_SET_PROTOTYPE_METHOD(tpl, "setProperty", SetProperty);
 
   constructor.Reset(isolate, tpl->GetFunction());
   exports->Set(String::NewFromUtf8(isolate, MPV_PLAYER_CLASS), tpl->GetFunction());
@@ -1499,7 +1502,7 @@ void MpvPlayer::Init(Local<Object> exports) {
  */
 void MpvPlayer::Create(const FunctionCallbackInfo<Value> &args) {
   Isolate *isolate = args.GetIsolate();
-  MpvPlayer *self = ObjectWrap::Unwrap<MpvPlayer>(args.Holder());
+  auto self = ObjectWrap::Unwrap<MpvPlayer>(args.Holder());
 
   if (self->d->_mpv) {
     throw_js(isolate, "MpvPlayer::create: player already created, cannot call this method twice on the same object");
@@ -1548,7 +1551,7 @@ void MpvPlayer::Create(const FunctionCallbackInfo<Value> &args) {
 
 void MpvPlayer::Command(const FunctionCallbackInfo<Value> &args) {
   Isolate *i = args.GetIsolate();
-  MpvPlayer *self = ObjectWrap::Unwrap<MpvPlayer>(args.Holder());
+  auto self = ObjectWrap::Unwrap<MpvPlayer>(args.Holder());
 
   if (!self->d->_mpv) {
     throw_js(i, "MpvPlayer::command: player object is not initialized");
@@ -1577,5 +1580,80 @@ void MpvPlayer::Command(const FunctionCallbackInfo<Value> &args) {
   int mpv_result = mpv_command(self->d->_mpv, mpv_args);
   if (mpv_result != MPV_ERROR_SUCCESS) {
     throw_js(i, mpv_error_string(mpv_result));
+  }
+}
+
+void MpvPlayer::GetProperty(const v8::FunctionCallbackInfo<v8::Value> &args) {
+  Isolate *i = args.GetIsolate();
+  auto self = ObjectWrap::Unwrap<MpvPlayer>(args.Holder());
+
+  if (!self || !self->d->_mpv) {
+    throw_js(i, "MpvPlayer::getProperty: player object is not initialized");
+    return;
+  }
+
+  if (args.Length() != 1) {
+    throw_js(i, "MpvPlayer::getProperty: incorrect number of arguments, a single property name expected");
+    return;
+  }
+
+  Local<String> arg = args[0]->ToString();
+  if (arg.IsEmpty()) {
+    throw_js(i, "MpvPlayer::getProperty: incorrect arguments, a single property name expected");
+    return;
+  }
+
+  string arg_c = string_to_cc(arg);
+  if (arg_c.empty()) {
+    throw_js(i, "MpvPlayer::getProperty: fail");
+    return;
+  }
+
+  mpv_node node;
+  auto err_code = mpv_get_property(self->d->_mpv, arg_c.c_str(), MPV_FORMAT_NODE, &node);
+  if (err_code != MPV_ERROR_SUCCESS) {
+    throw_js(i, mpv_error_string(err_code));
+    return;
+  }
+
+  args.GetReturnValue().Set(mpv_node_to_v8_value(i, &node));
+  mpv_free_node_contents(&node);
+}
+
+void MpvPlayer::SetProperty(const v8::FunctionCallbackInfo<v8::Value> &args) {
+  Isolate *i = args.GetIsolate();
+  auto self = ObjectWrap::Unwrap<MpvPlayer>(args.Holder());
+
+  if (!self || !self->d->_mpv) {
+    throw_js(i, "MpvPlayer::setProperty: player object is not initialized");
+    return;
+  }
+
+  if (args.Length() != 2) {
+    throw_js(i, "MpvPlayer::getProperty: incorrect number of arguments, two arguments are expected");
+    return;
+  }
+
+  if (!args[0]->IsString() && !args[0]->IsStringObject()) {
+    throw_js(i, "MpvPlayer::getProperty: first argument is incorrect, a string expected");
+    return;
+  }
+
+  string prop_name_c = string_to_cc(args[0]);
+  if (prop_name_c.empty()) {
+    throw_js(i, "MpvPlayer::setProperty: fail");
+    return;
+  }
+
+  AutoMpvNode anode(i, args[1]);
+  if (!anode.valid()) {
+    throw_js(i, "MpvPlayer::setProperty: failed to convert js value to one of mpv_node formats");
+    return;
+  }
+
+  auto err_code = mpv_set_property(self->d->_mpv, prop_name_c.c_str(), MPV_FORMAT_NODE, anode.ptr());
+  if (err_code != MPV_ERROR_SUCCESS) {
+    throw_js(i, mpv_error_string(err_code));
+    return;
   }
 }
