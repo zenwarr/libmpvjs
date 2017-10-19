@@ -9,3 +9,6 @@ demo
 *.tmp
 .nyc_output
 *.kdev4
+mpv-build
+dist
+CMakeLists.txt

@@ -84,6 +84,29 @@ void AutoMpvNode::init_node(Isolate *i, mpv_node &node, const v8::Local<v8::Valu
   } else if (value->IsNumber() || value->IsNumberObject()) {
     node.format = MPV_FORMAT_DOUBLE;
     node.u.double_ = value->NumberValue();
+  } else if (value->IsArrayBuffer() || value->IsArrayBufferView()) {
+    Local<ArrayBuffer> buf = value->IsArrayBufferView()
+                             ? value.As<ArrayBufferView>()->Buffer()
+                             : value.As<ArrayBuffer>();
+
+    if (buf.IsEmpty()) {
+      node.format = MPV_FORMAT_NONE;
+      return;
+    }
+
+    node.format = MPV_FORMAT_BYTE_ARRAY;
+    node.u.ba = new mpv_byte_array;
+    node.u.ba->size = buf->ByteLength();
+    node.u.ba->data = new uint8_t[buf->ByteLength()];
+    memcpy(node.u.ba->data, buf->GetContents().Data(), buf->ByteLength());
+  } else if (value->IsSharedArrayBuffer()) {
+    Local<SharedArrayBuffer> buf = value.As<SharedArrayBuffer>();
+
+    node.format = MPV_FORMAT_BYTE_ARRAY;
+    node.u.ba = new mpv_byte_array;
+    node.u.ba->size = buf->ByteLength();
+    node.u.ba->data = new uint8_t[buf->ByteLength()];
+    memcpy(node.u.ba->data, buf->GetContents().Data(), buf->ByteLength());
   } else if (value->IsArray()) {
     Local<Array> arr = value.As<Array>();
     uint32_t arr_length = arr->Length();
@@ -144,6 +167,11 @@ void AutoMpvNode::free_node(mpv_node &node) {
         delete[] node.u.list->values;
       }
       delete node.u.list;
+      break;
+
+    case MPV_FORMAT_BYTE_ARRAY:
+      delete[] node.u.ba->data;
+      delete node.u.ba;
       break;
 
     default:

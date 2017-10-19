@@ -1,9 +1,9 @@
 {
   "targets": [
     {
-      "target_name": "mpv-webgl",
+      "target_name": "libmpvjs",
       "sources": [
-        "main.cpp", "mpv_player.cpp", "helpers.cpp", "mpv_node.cpp"
+        "module/main.cpp", "module/mpv_player.cpp", "module/helpers.cpp", "module/mpv_node.cpp"
       ],
       "libraries": [
         "-L/home/victor/devel/mpv-build/mpv/build/",
