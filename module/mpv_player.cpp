@@ -1674,8 +1674,6 @@ void MpvPlayer::Create(const FunctionCallbackInfo<Value> &args) {
   mpv_set_option_string(self->d->_mpv, "vo", "opengl-cb");
   mpv_set_option_string(self->d->_mpv, "hwdec", "auto");
   mpv_set_option_string(self->d->_mpv, "sub-auto", "no");
-  mpv_set_option_string(self->d->_mpv, "video-unscaled", "yes");
-  mpv_set_option_string(self->d->_mpv, "video-zoom", "0");
   mpv_set_option_string(self->d->_mpv, "input-vo-keyboard", "no");
 
   // initialize opengl callback api
