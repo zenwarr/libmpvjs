@@ -1593,39 +1593,35 @@ void MpvPlayer::Command(const FunctionCallbackInfo<Value> &args) {
     return;
   }
 
-  // convert list of strings to mpv command
-  const char *mpv_args[args.Length() + 1];
-  string mpv_args_c[args.Length()];
-  for (int j = 0; j < args.Length(); ++j) {
-    if (!args[j]->IsString()) {
-      throw_js(i, "MpvPlayer::command: invalid argument types, expected to be strings");
+  if (!args[0]->IsString() && !args[0]->IsStringObject()) {
+    throw_js(i, "MpvPlayer::command: invalid arguments, first arguments should be a command name");
+    return;
+  }
+
+  AutoForeignMpvNode mpv_result;
+  int err_code;
+  if (args.Length() == 1) {
+    string command_name = string_to_cc(args[0]);
+    err_code = mpv_command_string(self->d->_mpv, command_name.c_str());
+  } else {
+    AutoMpvNode mpv_args(args, 0);
+    if (!mpv_args.valid()) {
+      throw_js(i, "MpvPlayer::command: invalid arguments");
       return;
     }
-    mpv_args_c[j] = string_to_cc(args[j]);
-    mpv_args[j] = mpv_args_c[j].c_str();
-  }
-  mpv_args[args.Length()] = nullptr;
 
-  // send command to mpv
-  int mpv_result = mpv_command(self->d->_mpv, mpv_args);
-  if (mpv_result != MPV_ERROR_SUCCESS) {
-    throw_js(i, mpv_error_string(mpv_result));
+    err_code = mpv_command_node(self->d->_mpv, mpv_args.ptr(), &mpv_result.node);
   }
+
+  if (err_code != MPV_ERROR_SUCCESS) {
+    throw_js(i, mpv_error_string(err_code));
+    return;
+  }
+
+  args.GetReturnValue().Set(mpv_node_to_v8_value(i, &mpv_result.node));
 }
 
-struct AutoForeignMpvNode {
-  AutoForeignMpvNode() {
-    node.format = MPV_FORMAT_NONE;
-  }
-
-  ~AutoForeignMpvNode() {
-    mpv_free_node_contents(&node);
-  }
-
-  mpv_node node;
-};
-
-void MpvPlayer::GetProperty(const v8::FunctionCallbackInfo<v8::Value> &args) {
+void MpvPlayer::GetProperty(const FunctionCallbackInfo<Value> &args) {
   Isolate *i = args.GetIsolate();
   auto self = ObjectWrap::Unwrap<MpvPlayer>(args.Holder());
 
@@ -1661,7 +1657,7 @@ void MpvPlayer::GetProperty(const v8::FunctionCallbackInfo<v8::Value> &args) {
   args.GetReturnValue().Set(mpv_node_to_v8_value(i, &node.node));
 }
 
-void MpvPlayer::SetProperty(const v8::FunctionCallbackInfo<v8::Value> &args) {
+void MpvPlayer::SetProperty(const FunctionCallbackInfo<Value> &args) {
   Isolate *i = args.GetIsolate();
   auto self = ObjectWrap::Unwrap<MpvPlayer>(args.Holder());
 
@@ -1699,7 +1695,7 @@ void MpvPlayer::SetProperty(const v8::FunctionCallbackInfo<v8::Value> &args) {
   }
 }
 
-void MpvPlayer::Dispose(const v8::FunctionCallbackInfo<v8::Value> &args) {
+void MpvPlayer::Dispose(const FunctionCallbackInfo<Value> &args) {
   Isolate *i = args.GetIsolate();
   auto self = ObjectWrap::Unwrap<MpvPlayer>(args.Holder());
 

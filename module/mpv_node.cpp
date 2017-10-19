@@ -7,6 +7,49 @@
 using namespace v8;
 using namespace std;
 
+string dump_node(const mpv_node &node) {
+  switch (node.format) {
+    case MPV_FORMAT_NONE:
+      return "<none>";
+
+    case MPV_FORMAT_STRING:
+      return string(node.u.string) + " : addr " + to_string(reinterpret_cast<uint64_t>(static_cast<void*>(node.u.string)));
+
+    case MPV_FORMAT_INT64:
+      return to_string(node.u.int64);
+
+    case MPV_FORMAT_DOUBLE:
+      return to_string(node.u.double_);
+
+    case MPV_FORMAT_FLAG:
+      return to_string(static_cast<bool>(node.u.flag));
+
+    case MPV_FORMAT_NODE_ARRAY: {
+      string children = "[\n";
+      for (int q = 0; q < node.u.list->num; ++q) {
+        children += dump_node(node.u.list->values[q]) + "\n";
+      }
+      children += "]";
+      return children;
+    }
+
+    case MPV_FORMAT_NODE_MAP: {
+      string children = "[\n";
+      for (int q = 0; q < node.u.list->num; ++q) {
+        children += string(node.u.list->keys[q]) + " -> " + dump_node(node.u.list->values[q]) + "\n";
+      }
+      children += "]";
+      return children;
+    }
+
+    case MPV_FORMAT_BYTE_ARRAY:
+      return "<byte array with size " + to_string(node.u.ba->size) + ">";
+
+    default:
+      return "<unexpected node with format " + to_string(node.format) + ">";
+  }
+}
+
 Local<Value> mpv_node_to_v8_value(Isolate *i, const mpv_node *node) {
   switch (node->format) {
     case MPV_FORMAT_FLAG:
@@ -28,7 +71,7 @@ Local<Value> mpv_node_to_v8_value(Isolate *i, const mpv_node *node) {
 
     case MPV_FORMAT_NODE_ARRAY: {
       auto arr = Array::New(i, node->u.list->num);
-      for (uint32_t j = 0; j < node->u.list->num; ++j) {
+      for (int j = 0; j < node->u.list->num; ++j) {
         arr->Set(j, mpv_node_to_v8_value(i, &node->u.list->values[j]));
       }
       return arr;
@@ -36,7 +79,7 @@ Local<Value> mpv_node_to_v8_value(Isolate *i, const mpv_node *node) {
 
     case MPV_FORMAT_NODE_MAP: {
       auto obj = Object::New(i);
-      for (uint32_t j = 0; j < node->u.list->num; ++j) {
+      for (int j = 0; j < node->u.list->num; ++j) {
         obj->Set(String::NewFromUtf8(i, node->u.list->keys[j]), mpv_node_to_v8_value(i, &node->u.list->values[j]));
       }
       return obj;
@@ -54,15 +97,42 @@ Local<Value> mpv_node_to_v8_value(Isolate *i, const mpv_node *node) {
   }
 }
 
-AutoMpvNode::AutoMpvNode(Isolate *i, const v8::Local<v8::Value> &value) {
-  init_node(i, node, value);
+AutoMpvNode::AutoMpvNode(Isolate *i, const Local<Value> &value) {
+  init_node(i, _node, value);
+}
+
+AutoMpvNode::AutoMpvNode(const FunctionCallbackInfo<Value> &args, int first_arg_index) {
+  int real_arg_count = args.Length() - first_arg_index;
+
+  if (real_arg_count <= 0) {
+    _node.format = MPV_FORMAT_NONE;
+  } else if (real_arg_count == 1) {
+    init_node(args.GetIsolate(), _node, args[first_arg_index]);
+  } else {
+    _node.format = MPV_FORMAT_NODE_ARRAY;
+    _node.u.list = new mpv_node_list;
+    _node.u.list->num = real_arg_count;
+    _node.u.list->keys = nullptr;
+    _node.u.list->values = new mpv_node[real_arg_count];
+
+    for (int q = 0; q < real_arg_count; ++q) {
+      _node.u.list->values[q].format = MPV_FORMAT_NONE;
+      _node.u.list->values[q].u.string = nullptr;
+    }
+
+    for (int q = 0; q < real_arg_count; ++q) {
+      init_node(args.GetIsolate(), _node.u.list->values[q], args[q + first_arg_index]);
+    }
+
+    fprintf(stderr, (dump_node(_node) + "\n").c_str());
+  }
 }
 
 AutoMpvNode::~AutoMpvNode() {
-  free_node(node);
+  free_node(_node);
 }
 
-void AutoMpvNode::init_node(Isolate *i, mpv_node &node, const v8::Local<v8::Value> &value) {
+void AutoMpvNode::init_node(Isolate *i, mpv_node &node, const Local<Value> &value) {
   if (value.IsEmpty() || value->IsNull() || value->IsUndefined()) {
     node.format = MPV_FORMAT_NONE;
   } else if (value->IsBoolean() || value->IsBooleanObject()) {
@@ -154,23 +224,21 @@ void AutoMpvNode::free_node(mpv_node &node) {
 
     case MPV_FORMAT_NODE_ARRAY:
     case MPV_FORMAT_NODE_MAP:
-      for (int j = 0; j < node.u.list->num; ++j) {
-        if (node.u.list->keys) {
-          for (int k = 0; k < node.u.list->num; ++k) {
-            delete[] node.u.list->keys[k];
-          }
-          delete node.u.list->keys;
+      if (node.u.list->keys) {
+        for (int k = 0; k < node.u.list->num; ++k) {
+          delete[] node.u.list->keys[k];
         }
-        for (int v = 0; v < node.u.list->num; ++v) {
-          free_node(node.u.list->values[v]);
-        }
-        delete[] node.u.list->values;
+        delete node.u.list->keys;
       }
+      for (int v = 0; v < node.u.list->num; ++v) {
+        free_node(node.u.list->values[v]);
+      }
+      delete[] node.u.list->values;
       delete node.u.list;
       break;
 
     case MPV_FORMAT_BYTE_ARRAY:
-      delete[] node.u.ba->data;
+      delete[] static_cast<uint8_t*>(node.u.ba->data);
       delete node.u.ba;
       break;
 

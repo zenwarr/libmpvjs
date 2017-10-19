@@ -6,7 +6,7 @@ declare namespace libmpvjs {
     dispose(): void;
 
     create(): void;
-    command(name: string, ...args: string[]): void;
+    command(name: string, ...args: any[]): any;
     getProperty(name: string): any;
     setProperty(name: string, value: any): void;
   }
