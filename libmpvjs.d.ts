@@ -55,8 +55,10 @@ declare namespace libmpvjs {
     onSeek?: () => void;
     onPlaybackRestart?: () => void;
     onQueueOverflow?: () => void;
-    logLevel: string;
+    logLevel?: string;
   }
+
+  type PropertyObserver = (value: any) => void;
 
   class MpvPlayer {
     constructor(canvas: HTMLCanvasElement, options: PlayerOptions);
@@ -66,6 +68,7 @@ declare namespace libmpvjs {
     command(name: string, ...args: any[]): any;
     getProperty(name: string): any;
     setProperty(name: string, value: any): void;
+    observeProperty(name: string, handler: PropertyObserver): void;
   }
 }
 

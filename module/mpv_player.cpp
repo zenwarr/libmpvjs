@@ -117,6 +117,18 @@ public:
     }
   }
 
+  void handlePropertyChange(const mpv_event_property *pd) {
+    string prop_name(pd->name);
+    auto range = _observers.equal_range(pd->name);
+    Local<Value> args[] = { pd->data
+                            ? mpv_node_to_v8_value(_isolate, static_cast<const mpv_node*>(pd->data))
+                            : Null(_isolate).As<Value>() };
+    for (auto it = range.first; it != range.second; ++it) {
+      it->second->Get(_isolate)->CallAsFunction(_isolate->GetCurrentContext(),
+                                                _isolate->GetCurrentContext()->Global(), 1, args);
+    }
+  }
+
   /** GL functions implementation **/
 
   const GLubyte *glGetString(GLenum name) {
@@ -1134,6 +1146,7 @@ public:
 
   static MPImpl *_singleton;
   PlayerOptions _options;
+  multimap<string, shared_ptr<Persistent<Object>>> _observers;
   Isolate *_isolate;
   shared_ptr<Persistent<Object>> _canvas = nullptr;
   shared_ptr<Persistent<Object>> _renderingContext = nullptr;
@@ -1200,9 +1213,11 @@ void do_wakeup(uv_async_t *handle) {
 
       if (event->event_id == MPV_EVENT_NONE || event->event_id == MPV_EVENT_SHUTDOWN) {
         break;
+      } else if (event->event_id == MPV_EVENT_PROPERTY_CHANGE) {
+        MPImpl::singleton()->handlePropertyChange(static_cast<const mpv_event_property*>(event->data));
+      } else {
+        MPImpl::singleton()->handleEvent(event);
       }
-
-      MPImpl::singleton()->handleEvent(event);
     }
   }
 }
@@ -1492,6 +1507,7 @@ void MpvPlayer::Init(Local<Object> exports) {
   NODE_SET_PROTOTYPE_METHOD(tpl, "command", Command);
   NODE_SET_PROTOTYPE_METHOD(tpl, "getProperty", GetProperty);
   NODE_SET_PROTOTYPE_METHOD(tpl, "setProperty", SetProperty);
+  NODE_SET_PROTOTYPE_METHOD(tpl, "observeProperty", ObserveProperty);
   NODE_SET_PROTOTYPE_METHOD(tpl, "dispose", Dispose);
 
   constructor.Reset(isolate, tpl->GetFunction());
@@ -1765,12 +1781,12 @@ void MpvPlayer::SetProperty(const FunctionCallbackInfo<Value> &args) {
   }
 
   if (args.Length() != 2) {
-    throw_js(i, "MpvPlayer::getProperty: incorrect number of arguments, two arguments are expected");
+    throw_js(i, "MpvPlayer::setProperty: incorrect number of arguments, two arguments are expected");
     return;
   }
 
   if (!args[0]->IsString() && !args[0]->IsStringObject()) {
-    throw_js(i, "MpvPlayer::getProperty: first argument is incorrect, a string expected");
+    throw_js(i, "MpvPlayer::setProperty: first argument is incorrect, a string expected");
     return;
   }
 
@@ -1791,6 +1807,46 @@ void MpvPlayer::SetProperty(const FunctionCallbackInfo<Value> &args) {
     throw_js(i, mpv_error_string(err_code));
     return;
   }
+}
+
+void MpvPlayer::ObserveProperty(const FunctionCallbackInfo<Value> &args) {
+  Isolate *i = args.GetIsolate();
+  auto self = ObjectWrap::Unwrap<MpvPlayer>(args.Holder());
+
+  if (!self || !self->d->_mpv) {
+    throw_js(i, "MpvPlayer::observeProperty: player object is not initialized");
+    return;
+  }
+
+  if (args.Length() != 2) {
+    throw_js(i, "MpvPlayer::observeProperty: incorrect number of arguments, two arguments are expected");
+    return;
+  }
+
+  if (!args[0]->IsString() && !args[0]->IsStringObject()) {
+    throw_js(i, "MpvPlayer::observeProperty: first argument is incorrect, a string expected");
+    return;
+  }
+
+  string prop_name = string_to_cc(args[0]);
+  if (prop_name.empty()) {
+    throw_js(i, "MpvPlayer::setProperty: fail");
+    return;
+  }
+
+  Local<Object> handler = args[1].As<Object>();
+  if (handler.IsEmpty() || !handler->IsCallable()) {
+    throw_js(i, "MpvPlayer::observeProperty: second argument is invalid, a callable expected");
+    return;
+  }
+
+  int err_code = mpv_observe_property(self->d->_mpv, 0, prop_name.c_str(), MPV_FORMAT_NODE);
+  if (err_code != MPV_ERROR_SUCCESS) {
+    throw_js(i, mpv_error_string(err_code));
+    return;
+  }
+
+  self->d->_observers.insert({ prop_name, pers_ptr(new Persistent<Object>(i, handler)) });
 }
 
 void MpvPlayer::Dispose(const FunctionCallbackInfo<Value> &args) {
