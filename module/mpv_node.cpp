@@ -123,8 +123,6 @@ AutoMpvNode::AutoMpvNode(const FunctionCallbackInfo<Value> &args, int first_arg_
     for (int q = 0; q < real_arg_count; ++q) {
       init_node(args.GetIsolate(), _node.u.list->values[q], args[q + first_arg_index]);
     }
-
-    fprintf(stderr, (dump_node(_node) + "\n").c_str());
   }
 }
 

@@ -17,6 +17,24 @@ using namespace v8;
 using namespace std;
 using namespace node;
 
+struct PlayerOptions {
+  map<mpv_event_id, shared_ptr<Persistent<Function>>> event_handlers;
+  string log_level;
+};
+
+map<string, mpv_event_id> handler_events = {
+  { "onLog", MPV_EVENT_LOG_MESSAGE },
+  { "onFileStart", MPV_EVENT_START_FILE },
+  { "onFileEnd", MPV_EVENT_END_FILE },
+  { "onFileLoaded", MPV_EVENT_FILE_LOADED },
+  { "onIdle", MPV_EVENT_IDLE },
+  { "onVideoReconfig", MPV_EVENT_VIDEO_RECONFIG },
+  { "onAudioReconfig", MPV_EVENT_AUDIO_RECONFIG },
+  { "onSeek", MPV_EVENT_SEEK },
+  { "onPlaybackRestart", MPV_EVENT_PLAYBACK_RESTART },
+  { "onQueueOverflow", MPV_EVENT_QUEUE_OVERFLOW }
+};
+
 template<class T>
 struct PersistentDisposer {
   void operator()(Persistent<T> *p)const {
@@ -44,8 +62,9 @@ class MPImpl {
 public:
   MPImpl(Isolate *isolate,
          const shared_ptr<Persistent<Object>> &canvas,
-         const shared_ptr<Persistent<Object>> &renderingContext
-  ) : _isolate(isolate), _canvas(canvas), _renderingContext(renderingContext) {
+         const shared_ptr<Persistent<Object>> &renderingContext,
+         const PlayerOptions &opts
+  ) : _isolate(isolate), _canvas(canvas), _renderingContext(renderingContext), _options(opts) {
     _singleton = this;
   }
 
@@ -75,10 +94,33 @@ public:
     _mpv_gl = nullptr;
   }
 
+  void handleEvent(const mpv_event *e) {
+    auto it = _options.event_handlers.find(e->event_id);
+    if (it != _options.event_handlers.end()) {
+      if (e->event_id == MPV_EVENT_LOG_MESSAGE) {
+        auto msg = static_cast<const mpv_event_log_message*>(e->data);
+        Local<Value> args[] = { String::NewFromUtf8(_isolate, msg->text),
+                                MKI(msg->log_level),
+                                String::NewFromUtf8(_isolate, msg->prefix) };
+        it->second->Get(_isolate)->CallAsFunction(_isolate->GetCurrentContext(),
+                                                  _isolate->GetCurrentContext()->Global(), 3, args);
+      } else if (e->event_id == MPV_EVENT_END_FILE) {
+        auto end = static_cast<const mpv_event_end_file*>(e->data);
+        Local<Value> args[] = { MKI(end->reason), MKI(end->error) };
+        it->second->Get(_isolate)->CallAsFunction(_isolate->GetCurrentContext(),
+                                                  _isolate->GetCurrentContext()->Global(), 2, args);
+      } else {
+        Local<Value> dummy;
+        it->second->Get(_isolate)->CallAsFunction(_isolate->GetCurrentContext(),
+                                                  _isolate->GetCurrentContext()->Global(), 0, &dummy);
+      }
+    }
+  }
+
   /** GL functions implementation **/
 
   const GLubyte *glGetString(GLenum name) {
-    DEBUG("glGetString: %d\n", name);
+    GL_DEBUG("glGetString: %d\n", name);
 
     // check if we have already cached this property
     auto props_iter = gl_props.find(name);
@@ -114,19 +156,19 @@ public:
   }
 
   void glActiveTexture(GLenum texture) {
-    DEBUG("glActiveTexture\n");
+    GL_DEBUG("glActiveTexture\n");
 
     callMethod("activeTexture", MKI(texture));
   }
 
   GLuint glCreateProgram() {
-    DEBUG("glCreateProgram\n");
+    GL_DEBUG("glCreateProgram\n");
 
     return storeObject(_programs, callMethod("createProgram"));
   }
 
   void glDeleteProgram(GLuint program_id) {
-    DEBUG("glDeleteProgram\n");
+    GL_DEBUG("glDeleteProgram\n");
 
     auto prog_iter = _programs.find(program_id);
     if (prog_iter == _programs.end()) {
@@ -138,19 +180,19 @@ public:
   }
 
   void glGetProgramInfoLog(GLuint program_id, GLsizei max_length, GLsizei *length, GLchar *info_log) {
-    DEBUG("glGetProgramInfoLog\n");
+    GL_DEBUG("glGetProgramInfoLog\n");
 
     getObjectInfoLog("getProgramInfoLog", _programs, program_id, max_length, length, info_log);
   }
 
   void glGetProgramiv(GLuint program_id, GLenum pname, GLint *params) {
-    DEBUG("glGetProgramiv\n");
+    GL_DEBUG("glGetProgramiv\n");
 
     getObjectiv("getProgramParameter", _programs, program_id, pname, params);
   }
 
   void glUseProgram(GLuint program_id) {
-    DEBUG("glUseProgram\n");
+    GL_DEBUG("glUseProgram\n");
 
     auto prog_iter = _programs.find(program_id);
     if (prog_iter == _programs.end()) {
@@ -162,7 +204,7 @@ public:
   }
 
   void glLinkProgram(GLuint program_id) {
-    DEBUG("glLinkProgram\n");
+    GL_DEBUG("glLinkProgram\n");
 
     auto prog_iter = _programs.find(program_id);
     if (prog_iter == _programs.end()) {
@@ -174,13 +216,13 @@ public:
   }
 
   GLuint glCreateShader(GLenum shader_type) {
-    DEBUG("glCreateShader\n");
+    GL_DEBUG("glCreateShader\n");
 
     return storeObject(_shaders, callMethod("createShader", Number::New(_isolate, shader_type)));
   }
 
   void glDeleteShader(GLuint shader_id) {
-    DEBUG("glDeleteShader\n");
+    GL_DEBUG("glDeleteShader\n");
 
     auto sh_iter = _shaders.find(shader_id);
     if (sh_iter == _shaders.end()) {
@@ -192,7 +234,7 @@ public:
   }
 
   void glAttachShader(GLuint program_id, GLuint shader_id) {
-    DEBUG("glAttachShader\n");
+    GL_DEBUG("glAttachShader\n");
 
     auto prog_iter = _programs.find(program_id);
     if (prog_iter == _programs.end()) {
@@ -210,7 +252,7 @@ public:
   }
 
   void glCompileShader(GLuint shader_id) {
-    DEBUG("glCompileShader\n");
+    GL_DEBUG("glCompileShader\n");
 
     auto sh_iter = _shaders.find(shader_id);
     if (sh_iter == _shaders.end()) {
@@ -222,7 +264,7 @@ public:
   }
 
   void glShaderSource(GLuint shader_id, GLsizei count, const GLchar **string, const GLint *length) {
-    DEBUG("glShaderSource\n");
+    GL_DEBUG("glShaderSource\n");
 
     auto sh_iter = _shaders.find(shader_id);
     if (sh_iter == _shaders.end() || count < 0) {
@@ -250,7 +292,7 @@ public:
   }
 
   void glBindAttribLocation(GLuint program_id, GLuint index, const GLchar *name) {
-    DEBUG("glBindAttribLocation\n");
+    GL_DEBUG("glBindAttribLocation\n");
 
     auto prog_iter = _programs.find(program_id);
     if (prog_iter == _programs.end()) {
@@ -263,10 +305,10 @@ public:
   }
 
   void glBindBuffer(GLenum target, GLuint buffer) {
-    DEBUG("glBindBuffer\n");
+    GL_DEBUG("glBindBuffer\n");
 
     if (target == GL_PIXEL_UNPACK_BUFFER) {
-      DEBUG("binding a buffer to GL_PIXEL_UNPACK_BUFFER");
+      GL_DEBUG("binding a buffer to GL_PIXEL_UNPACK_BUFFER");
     }
 
     if (buffer == 0) {
@@ -284,7 +326,7 @@ public:
   }
 
   void glBindTexture(GLenum target, GLuint texture) {
-    DEBUG("glBindTexture\n");
+    GL_DEBUG("glBindTexture\n");
 
     if (texture == 0) {
       callMethod("bindTexture", {MKI(target), Null(_isolate)});
@@ -301,13 +343,13 @@ public:
   }
 
   void glBlendFuncSeparate(GLenum srcRGB, GLenum dstRGB, GLenum srcAplha, GLenum dstAplha) {
-    DEBUG("glBlendFuncSeparate\n");
+    GL_DEBUG("glBlendFuncSeparate\n");
 
     callMethod("blendFuncSeparate", { MKI(srcRGB), MKI(dstRGB), MKI(srcAplha), MKI(dstAplha) });
   }
 
   void glBufferData(GLenum target, GLsizeiptr size, const GLvoid *data, GLenum usage) {
-    DEBUG("glBufferData\n");
+    GL_DEBUG("glBufferData\n");
     
     if (size < 0) {
       // set GL_INVALID_VALUE
@@ -327,7 +369,7 @@ public:
   }
 
   void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const GLvoid *data) {
-    DEBUG("glBufferSubData\n");
+    GL_DEBUG("glBufferSubData\n");
     
     if (size < 0) {
       // set GL_INVALID_VALUE
@@ -347,73 +389,73 @@ public:
   }
 
   void glClear(GLbitfield mask) {
-    DEBUG("glClear\n");
+    GL_DEBUG("glClear\n");
 
     callMethod("clear", MKI(mask));
   }
 
   void glClearColor(GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha) {
-    DEBUG("glClearColor\n");
+    GL_DEBUG("glClearColor\n");
 
     callMethod("clearColor", { MKN(red), MKN(green), MKN(blue), MKN(alpha) });
   }
 
   void glDeleteBuffers(GLsizei n, const GLuint *buffers) {
-    DEBUG("glDeleteBuffers\n");
+    GL_DEBUG("glDeleteBuffers\n");
     
     deleteObjects("deleteBuffer", _buffers, n, buffers);
   }
 
   void glDeleteTextures(GLsizei n, const GLuint *textures) {
-    DEBUG("glDeleteTextures\n");
+    GL_DEBUG("glDeleteTextures\n");
 
     deleteObjects("deleteTexture", _textures, n, textures);
   }
 
   void glEnable(GLenum cap) {
-    DEBUG("glEnable\n");
+    GL_DEBUG("glEnable\n");
 
     callMethod("enable", MKI(cap));
   }
 
   void glDisable(GLenum cap) {
-    DEBUG("glDisable\n");
+    GL_DEBUG("glDisable\n");
 
     callMethod("disable", MKI(cap));
   }
 
   void glDisableVertexAttribArray(GLuint index) {
-    DEBUG("glDisableVertexAttribArray\n");
+    GL_DEBUG("glDisableVertexAttribArray\n");
 
     callMethod("disableVertexAttribArray", MKI(index));
   }
 
   void glEnableVertexAttribArray(GLuint index) {
-    DEBUG("glEnableVertexAttribArray\n");
+    GL_DEBUG("glEnableVertexAttribArray\n");
 
     callMethod("enableVertexAttribArray", MKI(index));
   }
 
   void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
-    DEBUG("glDrawArrays\n");
+    GL_DEBUG("glDrawArrays\n");
 
     callMethod("drawArrays", { MKI(mode), MKI(first), MKI(count) });
   }
 
   void glFinish() {
-    DEBUG("glFinish\n");
+    GL_DEBUG("glFinish\n");
 
     callMethod("finish");
   }
 
   void glFlush() {
-    DEBUG("glFlush\n");
+    GL_DEBUG("glFlush\n");
 
     callMethod("flush");
   }
 
   void glGenBuffers(GLsizei n, GLuint *buffers) {
-    DEBUG("glGenBuffers\n");
+    GL_DEBUG("glGenBuffers\n");
     
     if (!buffers || n == 0) {
       return;
@@ -431,7 +473,7 @@ public:
   }
 
   void glGenTextures(GLsizei n, GLuint *textures) {
-    DEBUG("glGenTextures\n");
+    GL_DEBUG("glGenTextures\n");
     
     if (!textures || n == 0) {
       return;
@@ -449,7 +491,7 @@ public:
   }
 
   GLint glGetAttribLocation(GLuint program_id, const GLchar *name) {
-    DEBUG("glGetAttribLocation\n");
+    GL_DEBUG("glGetAttribLocation\n");
 
     auto prog_iter = _programs.find(program_id);
     if (prog_iter == _programs.end()) {
@@ -463,19 +505,19 @@ public:
   }
 
   GLenum glGetError() {
-    DEBUG("glGetError\n");
+    GL_DEBUG("glGetError\n");
 
     auto result = callMethod("getError").As<Integer>();
 
     auto err_code = static_cast<GLenum>(result->IntegerValue());
     if (err_code != GL_NO_ERROR) {
-      DEBUG("glError result: %ld\n", result->IntegerValue());
+      GL_DEBUG("glError result: %ld\n", result->IntegerValue());
     }
     return err_code;
   }
 
   void glGetIntegerv(GLenum pname, GLint *params) {
-    DEBUG("glGetIntegerv: %d\n", pname);
+    GL_DEBUG("glGetIntegerv: %d\n", pname);
 
     if (!params) {
       return;
@@ -523,19 +565,19 @@ public:
   }
 
   void glGetShaderInfoLog(GLuint shader_id, GLsizei max_length, GLsizei *length, GLchar *info_log) {
-    DEBUG("glGetShaderInfoLog\n");
+    GL_DEBUG("glGetShaderInfoLog\n");
 
     getObjectInfoLog("getShaderInfoLog", _shaders, shader_id, max_length, length, info_log);
   }
 
   void glGetShaderiv(GLuint shader_id, GLenum pname, GLint *params) {
-    DEBUG("glGetShaderiv\n");
+    GL_DEBUG("glGetShaderiv\n");
 
     getObjectiv("getShaderParameter", _shaders, shader_id, pname, params);
   }
 
   GLint glGetUniformLocation(GLuint program_id, const GLchar *name) {
-    DEBUG("glGetUniformLocation\n");
+    GL_DEBUG("glGetUniformLocation\n");
 
     auto prog_iter = _programs.find(program_id);
     if (prog_iter == _programs.end()) {
@@ -549,10 +591,10 @@ public:
   }
 
   void glPixelStorei(GLenum pname, GLint param) {
-    DEBUG("glPixelStorei\n");
+    GL_DEBUG("glPixelStorei\n");
 
     if (pname == GL_UNPACK_ALIGNMENT) {
-      DEBUG("updaing unpack alignment, setting it to %d\n", param);
+      GL_DEBUG("updaing unpack alignment, setting it to %d\n", param);
       unpack_alignment = param;
       // set GL_NO_ERROR
       return;
@@ -565,7 +607,7 @@ public:
   }
 
   void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *data) {
-    DEBUG("glReadPixels\n");
+    GL_DEBUG("glReadPixels\n");
 
     if (!data) {
       return;
@@ -610,14 +652,14 @@ public:
   }
 
   void glScissor(GLint x, GLint y, GLsizei width, GLsizei height) {
-    DEBUG("glScissor\n");
+    GL_DEBUG("glScissor\n");
 
     callMethod("scissor", { MKI(x), MKI(y), MKI(width), MKI(height) });
   }
 
   void glTexImage2D(GLenum target, GLint level, GLint internal_format, GLsizei width,
                     GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid *data) {
-    DEBUG("glTexImage2D\n");
+    GL_DEBUG("glTexImage2D\n");
 
     if (target != GL_TEXTURE_2D) {
       _throw_js(("glTexImage2D: unsupported target = " + to_string(target)).c_str());
@@ -640,14 +682,14 @@ public:
   }
 
   void glTexParameteri(GLenum target, GLenum pname, GLint param) {
-    DEBUG("glTexParameteri\n");
+    GL_DEBUG("glTexParameteri\n");
 
     callMethod("texParameteri", { MKI(target), MKI(pname), MKI(param) });
   }
 
   void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
                        GLsizei height, GLenum format, GLenum type, const GLvoid *pixels) {
-    DEBUG("glTexSubImage2D\n");
+    GL_DEBUG("glTexSubImage2D\n");
 
     //TODO: handle PIXEL_UNPACK_BUFFER
 
@@ -658,31 +700,31 @@ public:
   }
 
   void glUniform1f(GLint location, GLfloat v0) {
-    DEBUG("glUniform1f\n");
+    GL_DEBUG("glUniform1f\n");
 
     callLocationMethod("uniform1f", location, { Local<Value>(), MKN(v0) });
   }
 
   void glUniform2f(GLint location, GLfloat v0, GLfloat v1) {
-    DEBUG("glUniform2f\n");
+    GL_DEBUG("glUniform2f\n");
 
     callLocationMethod("uniform2f", location, { Local<Value>(), MKN(v0), MKN(v1) });
   }
 
   void glUniform3f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2) {
-    DEBUG("glUniform3f\n");
+    GL_DEBUG("glUniform3f\n");
 
     callLocationMethod("uniform3f", location, { Local<Value>(), MKN(v0), MKN(v1), MKN(v2) });
   }
 
   void glUniform1i(GLint location, GLint v0) {
-    DEBUG("glUniform1i\n");
+    GL_DEBUG("glUniform1i\n");
 
     callLocationMethod("uniform1i", location, { Local<Value>(), MKN(v0) });
   }
 
   void glUniformMatrix2fv(GLint location, GLsizei matrix_count, GLboolean transpose, const GLfloat *value) {
-    DEBUG("glUniformMatrix2fv\n");
+    GL_DEBUG("glUniformMatrix2fv\n");
 
     if (matrix_count != 1) {
       _throw_js(("glUniformMatrix2fv: unsupported parameter matrix_count = " + to_string(matrix_count)).c_str());
@@ -693,7 +735,7 @@ public:
   }
 
   void glUniformMatrix3fv(GLint location, GLsizei matrix_count, GLboolean transpose, const GLfloat *value) {
-    DEBUG("glUniformMatrix3fv\n");
+    GL_DEBUG("glUniformMatrix3fv\n");
 
     if (matrix_count != 1) {
       _throw_js(("glUniformMatrix3fv: unsupported parameter matrix_count = " + to_string(matrix_count)).c_str());
@@ -705,7 +747,7 @@ public:
 
   void glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean normalized,
                              GLsizei stride, const GLvoid *pointer) {
-    DEBUG("glVertexAttribPointer\n");
+    GL_DEBUG("glVertexAttribPointer\n");
 
     auto low_pointer = static_cast<uint32_t>(reinterpret_cast<uint64_t>(pointer));
 
@@ -715,13 +757,13 @@ public:
   }
 
   void glViewport(GLint x, GLint y, GLsizei width, GLsizei height) {
-    DEBUG("glViewport\n");
+    GL_DEBUG("glViewport\n");
 
     callMethod("viewport", { MKI(x), MKI(y), MKI(width), MKI(height) });
   }
 
   void glBindFramebuffer(GLenum target, GLuint framebuffer) {
-    DEBUG("glBindFramebuffer\n");
+    GL_DEBUG("glBindFramebuffer\n");
 
     if (framebuffer == 0) {
       callMethod("bindFramebuffer", { MKI(target), Null(_isolate) });
@@ -738,7 +780,7 @@ public:
   }
 
   void glGenFramebuffers(GLsizei n, GLuint *ids) {
-    DEBUG("glGenFramebuffers\n");
+    GL_DEBUG("glGenFramebuffers\n");
 
     if (!ids || n == 0) {
       return;
@@ -756,19 +798,19 @@ public:
   }
 
   void glDeleteFramebuffers(GLsizei n, const GLuint *framebuffers) {
-    DEBUG("glDeleteFramebuffers\n");
+    GL_DEBUG("glDeleteFramebuffers\n");
 
     deleteObjects("deleteFramebuffer", _framebuffers, n, framebuffers);
   }
 
   GLenum glCheckFramebufferStatus(GLenum target) {
-    DEBUG("glCheckFramebufferStatus\n");
+    GL_DEBUG("glCheckFramebufferStatus\n");
 
     return static_cast<GLenum>(callMethod("checkFramebufferStatus", MKI(target))->IntegerValue());
   }
 
   void glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level) {
-    DEBUG("glFramebufferTexture2D\n");
+    GL_DEBUG("glFramebufferTexture2D\n");
 
     auto tex_iter = _textures.find(texture);
     if (tex_iter == _textures.end()) {
@@ -781,7 +823,7 @@ public:
   }
 
   void glGetFramebufferAttachmentParameteriv(GLenum target, GLenum attachment, GLenum pname, GLint *params) {
-    DEBUG("glGetFramebufferAttachmentParameteriv\n");
+    GL_DEBUG("glGetFramebufferAttachmentParameteriv\n");
 
     if (!params) {
       return;
@@ -976,7 +1018,7 @@ public:
 
     if (pname == GL_INFO_LOG_LENGTH) {
       *params = 1024 * 10;
-      DEBUG("simulating GL_INFO_LOG_LENGTH parameter...\n");
+      GL_DEBUG("simulating GL_INFO_LOG_LENGTH parameter...\n");
       return;
     } else if (pname == GL_SHADER_SOURCE_LENGTH || pname == GL_ACTIVE_UNIFORM_MAX_LENGTH
                || pname == GL_ACTIVE_ATTRIBUTE_MAX_LENGTH) {
@@ -1091,6 +1133,7 @@ public:
   /** Data members **/
 
   static MPImpl *_singleton;
+  PlayerOptions _options;
   Isolate *_isolate;
   shared_ptr<Persistent<Object>> _canvas = nullptr;
   shared_ptr<Persistent<Object>> _renderingContext = nullptr;
@@ -1132,7 +1175,7 @@ static uv_async_t async_handle, async_wakeup_handle;
  */
 void do_update(uv_async_t *handle) {
   if (MPImpl::singleton()) {
-    DEBUG("mpv_opengl_cb_draw: drawing a frame...\n");
+    GL_DEBUG("mpv_opengl_cb_draw: drawing a frame...\n");
     HandleScope scope(MPImpl::singleton()->_isolate);
     mpv_opengl_cb_draw(MPImpl::singleton()->gl(), 0, 1280, -720);
   }
@@ -1157,10 +1200,9 @@ void do_wakeup(uv_async_t *handle) {
 
       if (event->event_id == MPV_EVENT_NONE || event->event_id == MPV_EVENT_SHUTDOWN) {
         break;
-      } else if (event->event_id == MPV_EVENT_LOG_MESSAGE) {
-        auto log_msg = reinterpret_cast<mpv_event_log_message*>(event->data);
-        DEBUG("mpv log: %s", log_msg->text);
       }
+
+      MPImpl::singleton()->handleEvent(event);
     }
   }
 }
@@ -1429,9 +1471,10 @@ static void *get_proc_address(void *ctx, const char *name) {
 
 MpvPlayer::MpvPlayer(Isolate *isolate,
                      const shared_ptr<Persistent<Object>> &canvas,
-                     const shared_ptr<Persistent<Object>> &renderingContext) :
+                     const shared_ptr<Persistent<Object>> &renderingContext,
+                     const PlayerOptions &opts) :
     ObjectWrap(),
-    d(new MPImpl(isolate, canvas, renderingContext)) {
+    d(new MPImpl(isolate, canvas, renderingContext, opts)) {
 
 }
 
@@ -1486,6 +1529,46 @@ void MpvPlayer::Init(Local<Object> exports) {
     return;
   }
 
+  PlayerOptions opts;
+  if (args.Length() > 1) {
+    Local<Object> options = args[1].As<Object>();
+    if (options.IsEmpty()) {
+      throw_js(isolate, "MpvPlayer: invalid argument, option object expected");
+      return;
+    }
+
+    // enumerate option properties
+    Local<Array> op_props = options->GetOwnPropertyNames();
+    for (uint32_t q = 0; q < op_props->Length(); ++q) {
+      Local<String> prop_name = op_props->Get(q).As<String>();
+      string prop_name_cc = string_to_cc(prop_name);
+      if (prop_name_cc.size() > 2 && prop_name_cc.substr(0, 2) == "on") {
+        // event handler
+        auto he_iter = handler_events.find(prop_name_cc);
+        if (he_iter == handler_events.end()) {
+          throw_js(isolate, ("MpvPlayer: unknown event handler " + prop_name_cc).c_str());
+          return;
+        }
+
+        Local<Function> prop_value = options->Get(prop_name).As<Function>();
+        if (prop_name.IsEmpty()) {
+          throw_js(isolate, ("MpvPlayer: invalid handler for " + prop_name_cc + ", not a function").c_str());
+          return;
+        }
+
+        opts.event_handlers[he_iter->second] = pers_ptr(new Persistent<Function>(isolate, prop_value));
+      } else if (prop_name_cc == "logLevel") {
+        // log level
+        Local<String> prop_value = options->Get(prop_name).As<String>();
+        if (prop_value.IsEmpty()) {
+          throw_js(isolate, "MpvPlayer: invalid argument type for option logLevel: string expected");
+          return;
+        }
+        opts.log_level = string_to_cc(prop_value);
+      }
+    }
+  }
+
   // extract object pointing to canvas
   auto canvas = pers_ptr(new Persistent<Object>(isolate, arg->ToObject()));
 
@@ -1519,7 +1602,7 @@ void MpvPlayer::Init(Local<Object> exports) {
 
   // create C++ player object
   auto context_pers = pers_ptr(new Persistent<Object>(isolate, maybe_context.ToLocalChecked()->ToObject(isolate)));
-  auto player_obj = new MpvPlayer(isolate, canvas, context_pers);
+  auto player_obj = new MpvPlayer(isolate, canvas, context_pers, opts);
   player_obj->Wrap(args.This());
   player_obj->Ref(); // do not GC this object if there are no handles, we are going to deref it inside dispose
 
@@ -1546,8 +1629,23 @@ void MpvPlayer::Create(const FunctionCallbackInfo<Value> &args) {
     return;
   }
 
-  // set default paramers
-  mpv_request_log_messages(self->d->_mpv, "debug");
+  // to speed up things (in electron, yeah) we disable events js code hasn't subscribed to
+  const map<mpv_event_id, shared_ptr<Persistent<Function>>> &eh = self->d->_options.event_handlers;
+  for (int q = MPV_EVENT_LOG_MESSAGE; q <= MPV_EVENT_QUEUE_OVERFLOW; ++q) {
+    auto it = eh.find((mpv_event_id)q); // so hacky
+    if (it == eh.end() && q != MPV_EVENT_PROPERTY_CHANGE
+#ifdef BUILD_DEBUG
+      && q != MPV_EVENT_LOG_MESSAGE
+#endif
+        ) {
+      mpv_request_event(self->d->_mpv, (mpv_event_id)q, false);
+    }
+  }
+  // wow, such fast
+
+  // set default logging params
+  const char *log_level = self->d->_options.log_level.empty() ? "warn" : self->d->_options.log_level.c_str();
+  mpv_request_log_messages(self->d->_mpv, log_level);
   mpv_set_wakeup_callback(self->d->_mpv, mpv_async_wakeup_cb, self);
 
   // initialize mpv
