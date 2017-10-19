@@ -3,6 +3,7 @@
 declare namespace libmpvjs {
   class MpvPlayer {
     constructor(canvas: HTMLCanvasElement);
+    dispose(): void;
 
     create(): void;
     command(name: string, ...args: string[]): void;

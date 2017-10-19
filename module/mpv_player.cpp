@@ -17,6 +17,20 @@ using namespace v8;
 using namespace std;
 using namespace node;
 
+template<class T>
+struct PersistentDisposer {
+  void operator()(Persistent<T> *p)const {
+    DEBUG("disposing a persistent handle...\n");
+    p->Reset();
+    delete p;
+  }
+};
+
+template<class T>
+shared_ptr<Persistent<T>> pers_ptr(Persistent<T> *p) {
+  return shared_ptr<Persistent<T>>(p, PersistentDisposer<T>());
+}
+
 /*************************************************************************************
  * MpvPlayerImpl
  *************************************************************************************/
@@ -36,9 +50,20 @@ public:
   }
 
   ~MPImpl() {
-    // unint mpv
+    // persistent handles being hold by us are automatically disposed by PersistentDisposer
+    // we cannot un-initialize mpv here because accessing js is already forbidden now.
+    // dispose method should be called explicitly by js code to uninit
+
+    if (_mpv || _mpv_gl) {
+      DEBUG("MpvPlayer object is removed by GC, but dispose function has not been called\n");
+    }
+  }
+
+  void dispose() {
+    DEBUG("removing MPImpl instance...\n");
+
     if (_mpv) {
-      mpv_detach_destroy(_mpv);
+      mpv_terminate_destroy(_mpv);
     }
     if (_mpv_gl) {
       mpv_opengl_cb_set_update_callback(_mpv_gl, nullptr, nullptr);
@@ -46,6 +71,8 @@ public:
     }
 
     _singleton = nullptr;
+    _mpv = nullptr;
+    _mpv_gl = nullptr;
   }
 
   /** GL functions implementation **/
@@ -792,7 +819,7 @@ public:
       _throw_js(("failed to get rendering context method " + method_name).c_str());
       return shared_ptr<Persistent<Function>>();
     }
-    auto pers = make_shared<Persistent<Function>>(_isolate, method);
+    auto pers = pers_ptr(new Persistent<Function>(_isolate, method));
     _webgl_methods[method_name] = pers;
     return pers;
   }
@@ -814,7 +841,7 @@ public:
   template<class T>
   T storeObject(map<T, shared_ptr<Persistent<Value>>> &store, const Local<Value> &value) {
     T object_id = newId();
-    store[object_id] = make_shared<Persistent<Value>>(_isolate, value);
+    store[object_id] = pers_ptr(new Persistent<Value>(_isolate, value));
     return object_id;
   }
 
@@ -1106,6 +1133,7 @@ static uv_async_t async_handle, async_wakeup_handle;
 void do_update(uv_async_t *handle) {
   if (MPImpl::singleton()) {
     DEBUG("mpv_opengl_cb_draw: drawing a frame...\n");
+    HandleScope scope(MPImpl::singleton()->_isolate);
     mpv_opengl_cb_draw(MPImpl::singleton()->gl(), 0, 1280, -720);
   }
 }
@@ -1421,6 +1449,7 @@ void MpvPlayer::Init(Local<Object> exports) {
   NODE_SET_PROTOTYPE_METHOD(tpl, "command", Command);
   NODE_SET_PROTOTYPE_METHOD(tpl, "getProperty", GetProperty);
   NODE_SET_PROTOTYPE_METHOD(tpl, "setProperty", SetProperty);
+  NODE_SET_PROTOTYPE_METHOD(tpl, "dispose", Dispose);
 
   constructor.Reset(isolate, tpl->GetFunction());
   exports->Set(String::NewFromUtf8(isolate, MPV_PLAYER_CLASS), tpl->GetFunction());
@@ -1458,7 +1487,7 @@ void MpvPlayer::Init(Local<Object> exports) {
   }
 
   // extract object pointing to canvas
-  auto canvas = make_shared<Persistent<Object>>(isolate, arg->ToObject());
+  auto canvas = pers_ptr(new Persistent<Object>(isolate, arg->ToObject()));
 
   // find getContext method on canvas object
   Local<Object> get_context_func = canvas->Get(isolate)->Get(String::NewFromUtf8(isolate, "getContext"))->ToObject();
@@ -1489,9 +1518,10 @@ void MpvPlayer::Init(Local<Object> exports) {
   }
 
   // create C++ player object
-  auto context_pers = make_shared<Persistent<Object>>(isolate, maybe_context.ToLocalChecked()->ToObject(isolate));
+  auto context_pers = pers_ptr(new Persistent<Object>(isolate, maybe_context.ToLocalChecked()->ToObject(isolate)));
   auto player_obj = new MpvPlayer(isolate, canvas, context_pers);
   player_obj->Wrap(args.This());
+  player_obj->Ref(); // do not GC this object if there are no handles, we are going to deref it inside dispose
 
   args.GetReturnValue().Set(args.This());
 }
@@ -1583,6 +1613,18 @@ void MpvPlayer::Command(const FunctionCallbackInfo<Value> &args) {
   }
 }
 
+struct AutoForeignMpvNode {
+  AutoForeignMpvNode() {
+    node.format = MPV_FORMAT_NONE;
+  }
+
+  ~AutoForeignMpvNode() {
+    mpv_free_node_contents(&node);
+  }
+
+  mpv_node node;
+};
+
 void MpvPlayer::GetProperty(const v8::FunctionCallbackInfo<v8::Value> &args) {
   Isolate *i = args.GetIsolate();
   auto self = ObjectWrap::Unwrap<MpvPlayer>(args.Holder());
@@ -1609,15 +1651,14 @@ void MpvPlayer::GetProperty(const v8::FunctionCallbackInfo<v8::Value> &args) {
     return;
   }
 
-  mpv_node node;
-  auto err_code = mpv_get_property(self->d->_mpv, arg_c.c_str(), MPV_FORMAT_NODE, &node);
+  AutoForeignMpvNode node;
+  auto err_code = mpv_get_property(self->d->_mpv, arg_c.c_str(), MPV_FORMAT_NODE, &node.node);
   if (err_code != MPV_ERROR_SUCCESS) {
     throw_js(i, mpv_error_string(err_code));
     return;
   }
 
-  args.GetReturnValue().Set(mpv_node_to_v8_value(i, &node));
-  mpv_free_node_contents(&node);
+  args.GetReturnValue().Set(mpv_node_to_v8_value(i, &node.node));
 }
 
 void MpvPlayer::SetProperty(const v8::FunctionCallbackInfo<v8::Value> &args) {
@@ -1656,4 +1697,22 @@ void MpvPlayer::SetProperty(const v8::FunctionCallbackInfo<v8::Value> &args) {
     throw_js(i, mpv_error_string(err_code));
     return;
   }
+}
+
+void MpvPlayer::Dispose(const v8::FunctionCallbackInfo<v8::Value> &args) {
+  Isolate *i = args.GetIsolate();
+  auto self = ObjectWrap::Unwrap<MpvPlayer>(args.Holder());
+
+  if (!self || !self->d->_mpv) {
+    throw_js(i, "MpvPlayer::dispose: player object is not initialized");
+    return;
+  }
+
+  if (args.Length()) {
+    throw_js(i, "MpvPlayer::dispose: incorrect number of arguments, should be 0");
+    return;
+  }
+
+  self->d->dispose();
+  self->Unref(); // now v8 is free to remove this object
 }
