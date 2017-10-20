@@ -12,10 +12,14 @@ std::string string_to_cc(const Local<Value> &str) {
   if (*v == nullptr) {
     return std::string();
   } else {
-    return std::string(*v, v.length());
+    return std::string(*v, static_cast<unsigned long>(v.length()));
   }
 }
 
 Local<Function> get_method(Isolate *i, shared_ptr<Persistent<Object>> obj, const char *method_name) {
   return Local<Function>::Cast(obj->Get(i)->Get(String::NewFromUtf8(i, method_name)));
+}
+
+Local<String> make_string(Isolate *i, const char *text) {
+  return String::NewFromUtf8(i, text, NewStringType::kNormal).ToLocalChecked();
 }

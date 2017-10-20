@@ -108,9 +108,9 @@ public:
     if (it != _options.event_handlers.end()) {
       if (e->event_id == MPV_EVENT_LOG_MESSAGE) {
         auto msg = static_cast<const mpv_event_log_message*>(e->data);
-        Local<Value> args[] = { String::NewFromUtf8(_isolate, msg->text),
+        Local<Value> args[] = { make_string(_isolate, msg->text),
                                 MKI(msg->log_level),
-                                String::NewFromUtf8(_isolate, msg->prefix) };
+                                make_string(_isolate, msg->prefix) };
         it->second->Get(_isolate)->CallAsFunction(_isolate->GetCurrentContext(),
                                                   _isolate->GetCurrentContext()->Global(), 3, args);
       } else if (e->event_id == MPV_EVENT_END_FILE) {
@@ -305,9 +305,9 @@ public:
 
     Local<String> shader_source;
     if (length) {
-      shader_source = String::NewFromUtf8(_isolate, string[0], String::kNormalString, length[0]);
+      shader_source = String::NewFromUtf8(_isolate, string[0], NewStringType::kNormal, length[0]).ToLocalChecked();
     } else {
-      shader_source = String::NewFromUtf8(_isolate, string[0]);
+      shader_source = make_string(_isolate, string[0]);
     }
 
     Local<Value> args[2] = { sh_iter->second->Get(_isolate), shader_source };
@@ -323,7 +323,7 @@ public:
       return;
     }
 
-    Local<Value> args[3] = { prog_iter->second->Get(_isolate), MKI(index), String::NewFromUtf8(_isolate, name) };
+    Local<Value> args[3] = { prog_iter->second->Get(_isolate), MKI(index), make_string(_isolate, name) };
     callMethod("bindAttribLocation", ARG_COUNT, args);
   }
 
@@ -536,18 +536,18 @@ public:
       return -1;
     }
 
-    Local<Value> args[2] = { prog_iter->second->Get(_isolate),
-                             String::NewFromUtf8(_isolate, name) };
+    Local<Value> args[2] = { prog_iter->second->Get(_isolate), make_string(_isolate, name) };
     auto r = callMethod("getAttribLocation", ARG_COUNT, args);
-    return r.IsEmpty() ? -1 : static_cast<GLint>(r.As<Integer>()->IntegerValue());
+    return r.IsEmpty()
+           ? -1
+           : static_cast<GLint>(r.As<Integer>()->IntegerValue(_isolate->GetCurrentContext()).ToChecked());
   }
 
   GLenum glGetError() {
     GL_DEBUG("glGetError\n");
 
     auto result = callMethod("getError").As<Integer>();
-
-    auto err_code = static_cast<GLenum>(result->IntegerValue());
+    auto err_code = static_cast<GLenum>(result->IntegerValue(_isolate->GetCurrentContext()).ToChecked());
     if (err_code != GL_NO_ERROR) {
       GL_DEBUG("glError result: %ld\n", result->IntegerValue());
     }
@@ -593,9 +593,9 @@ public:
 
       default:
         if (r->IsBoolean()) {
-          *params = static_cast<GLint>(r->BooleanValue());
+          *params = static_cast<GLint>(r->BooleanValue(_isolate->GetCurrentContext()).ToChecked());
         } else if (r->IsNumber()) {
-          *params = static_cast<GLint>(r->IntegerValue());
+          *params = static_cast<GLint>(r->IntegerValue(_isolate->GetCurrentContext()).ToChecked());
         } else {
           _throw_js("glGetIntegerv: unexpected return type");
         }
@@ -623,8 +623,7 @@ public:
       return -1;
     }
 
-    Local<Value> args[2] = { prog_iter->second->Get(_isolate),
-                             String::NewFromUtf8(_isolate, name) };
+    Local<Value> args[2] = { prog_iter->second->Get(_isolate), make_string(_isolate, name) };
     auto r = callMethod("getUniformLocation", ARG_COUNT, args);
     return r.IsEmpty() ? -1 : storeObject(_uniforms, r);
   }
@@ -634,10 +633,10 @@ public:
 
     if (pname == GL_UNPACK_ALIGNMENT) {
       GL_DEBUG("updaing unpack alignment, setting it to %d\n", param);
-      unpack_alignment = param;
+      unpack_alignment = static_cast<size_t>(param);
     } else if (pname == GL_PACK_ALIGNMENT) {
       GL_DEBUG("updating pack alignment, setting it to %d\n", param);
-      pack_alignment = param;
+      pack_alignment = static_cast<size_t>(param);
     } else if (pname == GL_UNPACK_ROW_LENGTH || pname == GL_PACK_ROW_LENGTH) {
       _throw_js(("glPixelStorei called with unsupported pname = " + to_string(param)).c_str());
       return;
@@ -760,7 +759,8 @@ public:
       // load data from bound buffer
       auto offset = reinterpret_cast<intptr_t>(pixels);
       Local<Value> args[9] = { MKI(target), MKI(level), MKI(xoffset), MKI(yoffset),
-                               MKI(width), MKI(height), MKI(format), MKI(type), MKI(offset) };
+                               MKI(width), MKI(height), MKI(format), MKI(type),
+                               MKIU(static_cast<uint32_t>(offset)) };
       callMethod("texSubImage2D", ARG_COUNT, args);
       return;
     }
@@ -891,7 +891,8 @@ public:
   GLenum glCheckFramebufferStatus(GLenum target) {
     GL_DEBUG("glCheckFramebufferStatus\n");
 
-    return static_cast<GLenum>(callMethod("checkFramebufferStatus", MKI(target))->IntegerValue());
+    auto r = callMethod("checkFramebufferStatus", MKI(target))->IntegerValue(_isolate->GetCurrentContext());
+    return r.IsJust() ? static_cast<GLenum>(r.ToChecked()) : 0;
   }
 
   void glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level) {
@@ -918,7 +919,10 @@ public:
     Local<Value> args[3] = { MKI(target), MKI(pname), MKI(pname) };
     auto r = callMethod("getFramebufferAttachmentParameter", ARG_COUNT, args).As<Integer>();
     if (!r.IsEmpty()) {
-      *params = static_cast<GLint>(r->IntegerValue());
+      auto result = r->IntegerValue(_isolate->GetCurrentContext());
+      if (result.IsJust()) {
+        *params = static_cast<GLint>(result.ToChecked());
+      }
     }
   }
 
@@ -954,16 +958,18 @@ public:
   }
 
   Local<Value> callMethod(const string &method_name, int argc, const Local<Value> *args) {
-    return localMethod(method_name)->Call(localContext(), argc, const_cast<Local<Value>*>(args));
+    return localMethod(method_name)->Call(_isolate->GetCurrentContext(),
+                                          localContext(), argc, const_cast<Local<Value>*>(args)).ToLocalChecked();
   }
 
   Local<Value> callMethod(const string &method_name, const Local<Value> &arg) {
-    return localMethod(method_name)->Call(localContext(), 1, const_cast<Local<Value>*>(&arg));
+    return localMethod(method_name)->Call(_isolate->GetCurrentContext(),
+                                          localContext(), 1, const_cast<Local<Value>*>(&arg)).ToLocalChecked();
   }
 
   Local<Value> callMethod(const string &method_name) {
     Local<Value> args[] = { };
-    return localMethod(method_name)->Call(localContext(), 0, args);
+    return localMethod(method_name)->Call(_isolate->GetCurrentContext(), localContext(), 0, args).ToLocalChecked();
   }
 
   template<class T>
@@ -1143,6 +1149,8 @@ public:
 
   void getObjectInfoLog(const char *webgl_method, const ObjectStore &store, GLuint object_id,
                         GLsizei max_length, GLsizei *length, GLchar *info_log) {
+    Local<Context> ctx = _isolate->GetCurrentContext();
+
     if (!info_log || max_length == 0) {
       return;
     }
@@ -1158,8 +1166,13 @@ public:
       return;
     }
 
-    auto result = callMethod(webgl_method, obj_iter->second->Get(_isolate))->ToString();
-    int written = result->WriteUtf8(info_log, max_length - 1, nullptr, String::NO_NULL_TERMINATION);
+    auto result = callMethod(webgl_method, obj_iter->second->Get(_isolate))->ToString(ctx);
+    if (result.IsEmpty()) {
+      return;
+    }
+
+    int written = result.ToLocalChecked()->WriteUtf8(info_log, max_length - 1,
+                                                     nullptr, String::NO_NULL_TERMINATION);
     info_log[written + 1] = 0;
     if (length) {
       *length = written + 1;
@@ -1270,7 +1283,7 @@ public:
   ObjectStore _framebuffers;
   map<GLint, shared_ptr<Persistent<Value>>> _uniforms;
   GLuint _last_id = 0;
-  int unpack_alignment = 1, pack_alignment = 1;
+  size_t unpack_alignment = 1, pack_alignment = 1;
   bool pixel_unpack_buffer_bound = false, pixel_pack_buffer_bound = false;
   map<BUF_ROLE, shared_ptr<Persistent<ArrayBuffer>>> _backing_bufs;
   
@@ -1297,7 +1310,7 @@ static uv_async_t async_handle, async_wakeup_handle;
  * This function is called by libuv to process new lbimpv frames.
  * It is always called on the main thread.
  */
-void do_update(uv_async_t *handle) {
+void do_update(uv_async_t *) {
   if (MPImpl::singleton()) {
     GL_DEBUG("mpv_opengl_cb_draw: drawing a frame...\n");
     HandleScope scope(MPImpl::singleton()->_isolate);
@@ -1309,7 +1322,7 @@ void do_update(uv_async_t *handle) {
  * This function is called by mpv itself when it has something to draw.
  * It can be called from any thread, so we should ask libuv to call the corresponding callback registered with uv_async_init.
  */
-void mpv_async_update_cb(void *ctx) {
+void mpv_async_update_cb(void *) {
   uv_async_send(&async_handle);
 }
 
@@ -1317,7 +1330,7 @@ void mpv_async_update_cb(void *ctx) {
  * This function is called by libuv to process new libmpv events.
  * it is always called on the main thread.
  */
-void do_wakeup(uv_async_t *handle) {
+void do_wakeup(uv_async_t *) {
   if (MPImpl::singleton()) {
     while (true) {
       mpv_event *event = mpv_wait_event(MPImpl::singleton()->mpv(), 0);
@@ -1337,7 +1350,7 @@ void do_wakeup(uv_async_t *handle) {
  * This function is called by mpv itself when it has unprocessed events.
  * It can be called from any thread, so we should ask libuv to call the corresponding callback registered with uv_async_init.
  */
-void mpv_async_wakeup_cb(void *ctx) {
+void mpv_async_wakeup_cb(void *) {
   uv_async_send(&async_wakeup_handle);
 }
 
@@ -1586,7 +1599,7 @@ static map<string, void*> gl_func_map = {
 /**
  * The function used by MPV to get addresses for opengl functions.
  */
-static void *get_proc_address(void *ctx, const char *name) {
+static void *get_proc_address(void *, const char *name) {
   auto iter = gl_func_map.find(string(name));
   if (iter == gl_func_map.end()) {
     fprintf(stderr, "No WebGL wrapper for a function named %s\n", name);
@@ -1608,10 +1621,11 @@ MpvPlayer::MpvPlayer(Isolate *isolate,
  * Initialize the native module
  */
 void MpvPlayer::Init(Local<Object> exports) {
-  Isolate *isolate = exports->GetIsolate();
+  Isolate *i = Isolate::GetCurrent();
+  Local<Context> ctx = i->GetCurrentContext();
 
-  Local<FunctionTemplate> tpl = FunctionTemplate::New(isolate, New);
-  tpl->SetClassName(String::NewFromUtf8(isolate, MPV_PLAYER_CLASS));
+  Local<FunctionTemplate> tpl = FunctionTemplate::New(i, New);
+  tpl->SetClassName(make_string(i, MPV_PLAYER_CLASS));
   tpl->InstanceTemplate()->SetInternalFieldCount(1);
 
   NODE_SET_PROTOTYPE_METHOD(tpl, "create", Create);
@@ -1621,8 +1635,8 @@ void MpvPlayer::Init(Local<Object> exports) {
   NODE_SET_PROTOTYPE_METHOD(tpl, "observeProperty", ObserveProperty);
   NODE_SET_PROTOTYPE_METHOD(tpl, "dispose", Dispose);
 
-  constructor.Reset(isolate, tpl->GetFunction());
-  exports->Set(String::NewFromUtf8(isolate, MPV_PLAYER_CLASS), tpl->GetFunction());
+  constructor.Reset(i, tpl->GetFunction(ctx).ToLocalChecked());
+  exports->Set(ctx, make_string(i, MPV_PLAYER_CLASS), tpl->GetFunction(ctx).ToLocalChecked());
 
   // initialize libuv async callbacks
   uv_async_init(uv_default_loop(), &async_handle, do_update);
@@ -1635,24 +1649,25 @@ void MpvPlayer::Init(Local<Object> exports) {
  * This argument should be an object representing a valid DOM canvas element.
  */
  void MpvPlayer::New(const FunctionCallbackInfo<Value> &args) {
-  Isolate *isolate = args.GetIsolate();
+  Isolate *i = args.GetIsolate();
+  Local<Context> ctx = i->GetCurrentContext();
 
   if (!args.IsConstructCall()) {
     // our constructor function is called as a function, without new
-    isolate->ThrowException(String::NewFromUtf8(isolate, "MpvPlayer constructor should be called with new"));
+    i->ThrowException(make_string(i, "MpvPlayer constructor should be called with new"));
     return;
   }
 
   if (args.Length() < 1) {
-    isolate->ThrowException(
-      Exception::TypeError(String::NewFromUtf8(isolate, "MpvPlayer: invalid number of arguments for constructor: canvas DOM element expected")));
+    i->ThrowException(
+      Exception::TypeError(make_string(i, "MpvPlayer: invalid number of arguments for constructor: canvas DOM element expected")));
     return;
   }
 
   Local<Value> arg = args[0];
   if (!arg->IsObject()) {
-    isolate->ThrowException(
-      Exception::TypeError(String::NewFromUtf8(isolate, "MpvPlayer: invalid argument, canvas DOM element expected")));
+    i->ThrowException(
+      Exception::TypeError(make_string(i, "MpvPlayer: invalid argument, canvas DOM element expected")));
     return;
   }
 
@@ -1660,35 +1675,35 @@ void MpvPlayer::Init(Local<Object> exports) {
   if (args.Length() > 1) {
     Local<Object> options = args[1].As<Object>();
     if (options.IsEmpty()) {
-      throw_js(isolate, "MpvPlayer: invalid argument, option object expected");
+      throw_js(i, "MpvPlayer: invalid argument, option object expected");
       return;
     }
 
     // enumerate option properties
-    Local<Array> op_props = options->GetOwnPropertyNames();
+    Local<Array> op_props = options->GetOwnPropertyNames(ctx).ToLocalChecked();
     for (uint32_t q = 0; q < op_props->Length(); ++q) {
-      Local<String> prop_name = op_props->Get(q).As<String>();
+      Local<String> prop_name = op_props->Get(ctx, q).ToLocalChecked().As<String>();
       string prop_name_cc = string_to_cc(prop_name);
       if (prop_name_cc.size() > 2 && prop_name_cc.substr(0, 2) == "on") {
         // event handler
         auto he_iter = handler_events.find(prop_name_cc);
         if (he_iter == handler_events.end()) {
-          throw_js(isolate, ("MpvPlayer: unknown event handler " + prop_name_cc).c_str());
+          throw_js(i, ("MpvPlayer: unknown event handler " + prop_name_cc).c_str());
           return;
         }
 
-        Local<Function> prop_value = options->Get(prop_name).As<Function>();
+        Local<Function> prop_value = options->Get(ctx, prop_name).ToLocalChecked().As<Function>();
         if (prop_name.IsEmpty()) {
-          throw_js(isolate, ("MpvPlayer: invalid handler for " + prop_name_cc + ", not a function").c_str());
+          throw_js(i, ("MpvPlayer: invalid handler for " + prop_name_cc + ", not a function").c_str());
           return;
         }
 
-        opts.event_handlers[he_iter->second] = pers_ptr(new Persistent<Function>(isolate, prop_value));
+        opts.event_handlers[he_iter->second] = pers_ptr(new Persistent<Function>(i, prop_value));
       } else if (prop_name_cc == "logLevel") {
         // log level
-        Local<String> prop_value = options->Get(prop_name).As<String>();
+        Local<String> prop_value = options->Get(ctx, prop_name).ToLocalChecked().As<String>();
         if (prop_value.IsEmpty()) {
-          throw_js(isolate, "MpvPlayer: invalid argument type for option logLevel: string expected");
+          throw_js(i, "MpvPlayer: invalid argument type for option logLevel: string expected");
           return;
         }
         opts.log_level = string_to_cc(prop_value);
@@ -1697,25 +1712,26 @@ void MpvPlayer::Init(Local<Object> exports) {
   }
 
   // extract object pointing to canvas
-  auto canvas = pers_ptr(new Persistent<Object>(isolate, arg->ToObject()));
+  auto canvas = pers_ptr(new Persistent<Object>(i, arg->ToObject(ctx).ToLocalChecked()));
 
   // find getContext method on canvas object
-  Local<Object> get_context_func = canvas->Get(isolate)->Get(String::NewFromUtf8(isolate, "getContext"))->ToObject();
+  Local<Object> get_context_func = canvas->Get(i)->Get(ctx, make_string(i, "getContext"))
+      .ToLocalChecked()->ToObject(ctx).ToLocalChecked();
   if (get_context_func.IsEmpty() || get_context_func->IsUndefined()) {
-    throw_js(isolate, "MpvPlayer::create: failed to create WebGL rendering context");
+    throw_js(i, "MpvPlayer::create: failed to create WebGL rendering context");
     return;
   }
 
   // and call canvas.getContext to get webgl rendering context
-  Local<Object> context_opts = Object::New(isolate);
-  context_opts->Set(String::NewFromUtf8(isolate, "premultipliedAlpha"), Boolean::New(isolate, true));
-  context_opts->Set(String::NewFromUtf8(isolate, "alpha"), Boolean::New(isolate, false));
-  context_opts->Set(String::NewFromUtf8(isolate, "antialias"), Boolean::New(isolate, false));
-  Local<Value> get_context_args[] = { String::NewFromUtf8(isolate, "webgl2"), context_opts };
-  TryCatch try_catch(isolate);
+  Local<Object> context_opts = Object::New(i);
+  context_opts->Set(i->GetCurrentContext(), make_string(i, "premultipliedAlpha"), Boolean::New(i, true));
+  context_opts->Set(i->GetCurrentContext(), make_string(i, "alpha"), Boolean::New(i, false));
+  context_opts->Set(i->GetCurrentContext(), make_string(i, "antialias"), Boolean::New(i, false));
+  Local<Value> get_context_args[] = { make_string(i, "webgl2"), context_opts };
+  TryCatch try_catch(i);
 
-  MaybeLocal<Value> maybe_context = get_context_func->CallAsFunction(isolate->GetCurrentContext(),
-                                                                     canvas->Get(isolate), 1, get_context_args);
+  MaybeLocal<Value> maybe_context = get_context_func->CallAsFunction(i->GetCurrentContext(),
+                                                                     canvas->Get(i), 1, get_context_args);
 
   if (try_catch.HasCaught()) {
     try_catch.ReThrow();
@@ -1723,13 +1739,16 @@ void MpvPlayer::Init(Local<Object> exports) {
   }
   if (maybe_context.IsEmpty() ||
       (maybe_context.ToLocalChecked()->IsNull() || maybe_context.ToLocalChecked()->IsUndefined())) {
-    throw_js(isolate, "MpvPlayer::create: failed to initialize WebGL");
+    throw_js(i, "MpvPlayer::create: failed to initialize WebGL");
     return;
   }
 
+  Local<Value> context = maybe_context.ToLocalChecked();
+
   // create C++ player object
-  auto context_pers = pers_ptr(new Persistent<Object>(isolate, maybe_context.ToLocalChecked()->ToObject(isolate)));
-  auto player_obj = new MpvPlayer(isolate, canvas, context_pers, opts);
+
+  auto context_pers = pers_ptr(new Persistent<Object>(i, context.As<Object>()));
+  auto player_obj = new MpvPlayer(i, canvas, context_pers, opts);
   player_obj->Wrap(args.This());
   player_obj->Ref(); // do not GC this object if there are no handles, we are going to deref it inside dispose
 
@@ -1741,18 +1760,18 @@ void MpvPlayer::Init(Local<Object> exports) {
  * Initializes MPV player instance.
  */
 void MpvPlayer::Create(const FunctionCallbackInfo<Value> &args) {
-  Isolate *isolate = args.GetIsolate();
+  Isolate *i = args.GetIsolate();
   auto self = ObjectWrap::Unwrap<MpvPlayer>(args.Holder());
 
   if (self->d->_mpv) {
-    throw_js(isolate, "MpvPlayer::create: player already created, cannot call this method twice on the same object");
+    throw_js(i, "MpvPlayer::create: player already created, cannot call this method twice on the same object");
     return;
   }
 
   // create mpv object
   self->d->_mpv = mpv_create();
   if (!self->d->_mpv) {
-    throw_js(isolate, "MpvPlayer::create: failed to initialize mpv");
+    throw_js(i, "MpvPlayer::create: failed to initialize mpv");
     return;
   }
 
@@ -1777,7 +1796,7 @@ void MpvPlayer::Create(const FunctionCallbackInfo<Value> &args) {
 
   // initialize mpv
   if (mpv_initialize(self->d->_mpv) < 0) {
-    throw_js(isolate, "MpvPlayer::create: failed to initialize mpv");
+    throw_js(i, "MpvPlayer::create: failed to initialize mpv");
     return;
   }
 
@@ -1790,12 +1809,12 @@ void MpvPlayer::Create(const FunctionCallbackInfo<Value> &args) {
   // initialize opengl callback api
   self->d->_mpv_gl = static_cast<mpv_opengl_cb_context*>(mpv_get_sub_api(self->d->_mpv, MPV_SUB_API_OPENGL_CB));
   if (!self->d->_mpv_gl) {
-    throw_js(isolate, "MpvPlayer::create: falied to initialize opengl subapi");
+    throw_js(i, "MpvPlayer::create: falied to initialize opengl subapi");
     return;
   }
 
   if (mpv_opengl_cb_init_gl(self->d->_mpv_gl, nullptr, get_proc_address, self) < 0) {
-    throw_js(isolate, "MpvPlayer::create: falied to initialize WebGL functions");
+    throw_js(i, "MpvPlayer::create: falied to initialize WebGL functions");
     return;
   }
 
@@ -1846,6 +1865,7 @@ void MpvPlayer::Command(const FunctionCallbackInfo<Value> &args) {
 
 void MpvPlayer::GetProperty(const FunctionCallbackInfo<Value> &args) {
   Isolate *i = args.GetIsolate();
+  Local<Context> ctx = i->GetCurrentContext();
   auto self = ObjectWrap::Unwrap<MpvPlayer>(args.Holder());
 
   if (!self || !self->d->_mpv) {
@@ -1858,13 +1878,13 @@ void MpvPlayer::GetProperty(const FunctionCallbackInfo<Value> &args) {
     return;
   }
 
-  Local<String> arg = args[0]->ToString();
+  MaybeLocal<String> arg = args[0]->ToString(ctx);
   if (arg.IsEmpty()) {
     throw_js(i, "MpvPlayer::getProperty: incorrect arguments, a single property name expected");
     return;
   }
 
-  string arg_c = string_to_cc(arg);
+  string arg_c = string_to_cc(arg.ToLocalChecked());
   if (arg_c.empty()) {
     throw_js(i, "MpvPlayer::getProperty: fail");
     return;

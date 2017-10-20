@@ -29,6 +29,8 @@ void throw_js(v8::Isolate *i, const char *msg);
  */
 std::string string_to_cc(const v8::Local<v8::Value> &str);
 
+v8::Local<v8::String> make_string(v8::Isolate *i, const char *text);
+
 /**
  * Gets a method with given name from v8::Object
  */

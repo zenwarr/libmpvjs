@@ -72,7 +72,7 @@ Local<Value> mpv_node_to_v8_value(Isolate *i, const mpv_node *node) {
     case MPV_FORMAT_NODE_ARRAY: {
       auto arr = Array::New(i, node->u.list->num);
       for (int j = 0; j < node->u.list->num; ++j) {
-        arr->Set(j, mpv_node_to_v8_value(i, &node->u.list->values[j]));
+        arr->Set(static_cast<uint32_t>(j), mpv_node_to_v8_value(i, &node->u.list->values[j]));
       }
       return arr;
     } break;
