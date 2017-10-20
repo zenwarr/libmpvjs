@@ -54,6 +54,7 @@ shared_ptr<Persistent<T>> pers_ptr(Persistent<T> *p) {
  *************************************************************************************/
 
 #define MKI(I) Integer::New(_isolate, I)
+#define MKIU(I) Integer::NewFromUnsigned(_isolate, I)
 #define MKN(N) Number::New(_isolate, N)
 
 typedef map<GLuint, shared_ptr<Persistent<Value>>> ObjectStore;
@@ -320,7 +321,11 @@ public:
     GL_DEBUG("glBindBuffer\n");
 
     if (target == GL_PIXEL_UNPACK_BUFFER) {
-      GL_DEBUG("binding a buffer to GL_PIXEL_UNPACK_BUFFER");
+      GL_DEBUG("binding/unbinding a buffer to GL_PIXEL_UNPACK_BUFFER");
+      pixel_unpack_buffer_bound = buffer != 0;
+    } else if (target == GL_PIXEL_PACK_BUFFER) {
+      GL_DEBUG("binding/unbinding a buffer to GL_PIXEL_PACK_BUFFER");
+      pixel_pack_buffer_bound = buffer != 0;
     }
 
     if (buffer == 0) {
@@ -608,14 +613,10 @@ public:
     if (pname == GL_UNPACK_ALIGNMENT) {
       GL_DEBUG("updaing unpack alignment, setting it to %d\n", param);
       unpack_alignment = param;
-      // set GL_NO_ERROR
-      return;
     } else if (pname == GL_PACK_ALIGNMENT) {
       GL_DEBUG("updating pack alignment, setting it to %d\n", param);
       pack_alignment = param;
-      // set GL_NO_ERROR
-      return;
-    } else if (pname == GL_UNPACK_ROW_LENGTH) {
+    } else if (pname == GL_UNPACK_ROW_LENGTH || pname == GL_PACK_ROW_LENGTH) {
       _throw_js(("glPixelStorei called with unsupported pname = " + to_string(param)).c_str());
       return;
     }
@@ -630,7 +631,13 @@ public:
       return;
     }
 
-    //todo: handle bound buffer
+    if (pixel_pack_buffer_bound) {
+      // read pixels to bound buffer, treat pointer as an offset (hope we are not gonna use huuuuge buffers)
+      auto offset = reinterpret_cast<intptr_t>(data);
+      callMethod("readPixels", { MKI(x), MKI(y), MKI(width), MKI(height), MKI(format),
+                                 MKI(type), MKIU(static_cast<uint32_t>(offset)) });
+      return;
+    }
 
     size_t pixel_count = static_cast<size_t>(width) * static_cast<size_t>(height);
     size_t bytes_per_pixel = bytesPerPixel(type, format);
@@ -683,7 +690,14 @@ public:
       return;
     }
 
-    //TODO: handle GL_PIXEL_UNPACK_BUFFER
+    if (pixel_unpack_buffer_bound) {
+      // load data from bound buffer
+      auto offset = reinterpret_cast<intptr_t>(data);
+      callMethod("texImage2D", { MKI(target), MKI(level), MKI(internal_format), MKI(width),
+                                 MKI(height), MKI(border), MKI(format), MKI(type),
+                                 MKIU(static_cast<uint32_t>(offset)) });
+      return;
+    }
 
     if (!data) {
       // data may be a null pointer. In this case, texture memory is allocated to accommodate
@@ -712,7 +726,13 @@ public:
                        GLsizei height, GLenum format, GLenum type, const GLvoid *pixels) {
     GL_DEBUG("glTexSubImage2D\n");
 
-    //TODO: handle PIXEL_UNPACK_BUFFER
+    if (pixel_unpack_buffer_bound) {
+      // load data from bound buffer
+      auto offset = reinterpret_cast<intptr_t>(pixels);
+      callMethod("texSubImage2D", { MKI(target), MKI(level), MKI(xoffset), MKI(yoffset),
+                                    MKI(width), MKI(height), MKI(format), MKI(type), MKI(offset) });
+      return;
+    }
 
     auto bufs = getTexBuffers(type, format, width, height, pixels);
     if (bufs.second.IsEmpty()) {
@@ -1185,6 +1205,7 @@ public:
   map<GLint, shared_ptr<Persistent<Value>>> _uniforms;
   GLuint _last_id = 0;
   int unpack_alignment = 1, pack_alignment = 1;
+  bool pixel_unpack_buffer_bound = false, pixel_pack_buffer_bound = false;
   
   GLuint newId() { return ++_last_id; }
 };
