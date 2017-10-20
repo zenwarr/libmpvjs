@@ -58,6 +58,13 @@ shared_ptr<Persistent<T>> pers_ptr(Persistent<T> *p) {
 #define MKN(N) Number::New(_isolate, N)
 #define ARG_COUNT (sizeof(args) / sizeof(args[0]))
 
+enum BUF_ROLE {
+  BB_GENERIC,
+  BB_BUFFER,
+  BB_UNIFORM,
+  BB_TEX
+};
+
 typedef map<GLuint, shared_ptr<Persistent<Value>>> ObjectStore;
 
 class MPImpl {
@@ -387,7 +394,7 @@ public:
                                MKI(usage) };
       callMethod("bufferData", ARG_COUNT, args);
     } else {
-      auto buf = ArrayBuffer::New(_isolate, static_cast<size_t>(size));
+      auto buf = backingBuffer(static_cast<size_t>(size), BB_BUFFER);
       memcpy(buf->GetContents().Data(), data, static_cast<size_t>(size));
 
       Local<Value> args[3] = { MKI(target), buf, MKI(usage) };
@@ -407,7 +414,7 @@ public:
       return;
     }
 
-    auto buf = ArrayBuffer::New(_isolate, static_cast<size_t>(size));
+    auto buf = backingBuffer(static_cast<size_t>(size), BB_BUFFER);
     memcpy(buf->GetContents().Data(), data, static_cast<size_t>(size));
 
     Local<Value> args[3] = { MKI(target),
@@ -659,7 +666,7 @@ public:
     size_t pixel_count = static_cast<size_t>(width) * static_cast<size_t>(height);
     size_t bytes_per_pixel = bytesPerPixel(type, format);
 
-    Local<ArrayBuffer> buf = ArrayBuffer::New(_isolate, pixel_count * bytes_per_pixel);
+    Local<ArrayBuffer> buf = backingBuffer(pixel_count * bytes_per_pixel, BB_GENERIC);
     Local<Value> buf_view = bufForType(type, buf, pixel_count);
     if (buf_view.IsEmpty()) {
       _throw_js(("glReadPixels: unsupported data format = " + to_string(type)).c_str());
@@ -680,7 +687,7 @@ public:
 
     size_t row_bytes_aligned = alignToPackBoundary(width * bytes_per_pixel);
     if (row_bytes_aligned == width * bytes_per_pixel) {
-      memcpy(data, buf->GetContents().Data(), buf->ByteLength());
+      memcpy(data, buf->GetContents().Data(), pixel_count * bytes_per_pixel);
     } else {
       auto buf_data = static_cast<const GLubyte*>(buf->GetContents().Data());
       auto dst_data = static_cast<GLubyte*>(data);
@@ -1072,19 +1079,12 @@ public:
     // Unfortunately, chromium does not accept externalized buffers for webgl methods (externalized buffers in this case should be created by chromium itself), so we have to copy entire data to the new buffer and give ownership to v8.
     // mpv uploads frames as textures, so this function is a resource hog.
     // Due to this, we should reuse a single buffer to avoid creating a ton of ArrayBuffers for each frame
-    if (!_backing_buf || _backing_buf->IsEmpty() ||
-        _backing_buf->Get(_isolate)->ByteLength() < pixel_count * bytes_per_pixel) {
-      _backing_buf.reset();
-      _backing_buf = pers_ptr(new Persistent<ArrayBuffer>(_isolate,
-                                                          ArrayBuffer::New(_isolate, pixel_count * bytes_per_pixel)));
-    }
-
-    Local<ArrayBuffer> buf = _backing_buf->Get(_isolate);
+    Local<ArrayBuffer> buf = backingBuffer(pixel_count * bytes_per_pixel, BB_TEX);
 
     size_t row_bytes_aligned = alignToUnpackBoundary(width * bytes_per_pixel);
     if (row_bytes_aligned == width * bytes_per_pixel) {
       // smooth rows, without gaps between them, we can copy it with one call
-      memcpy(buf->GetContents().Data(), data, buf->ByteLength());
+      memcpy(buf->GetContents().Data(), data, pixel_count * bytes_per_pixel);
     } else {
       // things got worse, there are alignment gaps between rows, and webgl does not support it.
       // we have to copy rows one-by-one and skip alignment gaps
@@ -1210,7 +1210,7 @@ public:
 
     int matrix_elem_count = matrix_size * matrix_size;
 
-    auto buf = ArrayBuffer::New(_isolate, matrix_elem_count * sizeof(GLfloat));
+    auto buf = backingBuffer(matrix_elem_count * sizeof(GLfloat), BB_UNIFORM);
     memcpy(buf->GetContents().Data(), value, matrix_elem_count * sizeof(GLfloat));
     auto buf_view = Float32Array::New(buf, 0, static_cast<size_t>(matrix_elem_count));
 
@@ -1228,6 +1228,28 @@ public:
 
   mpv_opengl_cb_context *gl()const { return _mpv_gl; }
   mpv_handle *mpv()const { return _mpv; }
+
+  Local<ArrayBuffer> backingBuffer(size_t size, BUF_ROLE buf_role) {
+    auto it = _backing_bufs.find(buf_role);
+    if (it != _backing_bufs.end() && it->second && !it->second->IsEmpty()) {
+      Local<ArrayBuffer> buf = it->second->Get(_isolate);
+      if (buf->ByteLength() >= size) {
+        return buf;
+      }
+    }
+
+    Local<ArrayBuffer> buf = ArrayBuffer::New(_isolate, size);
+    auto pers = pers_ptr(new Persistent<ArrayBuffer>(_isolate, buf));
+
+    if (it != _backing_bufs.end()) {
+      it->second.reset();
+      it->second = pers;
+    } else {
+      _backing_bufs[buf_role] = pers;
+    }
+
+    return buf;
+  }
 
   /** Data members **/
 
@@ -1250,7 +1272,7 @@ public:
   GLuint _last_id = 0;
   int unpack_alignment = 1, pack_alignment = 1;
   bool pixel_unpack_buffer_bound = false, pixel_pack_buffer_bound = false;
-  shared_ptr<Persistent<ArrayBuffer>> _backing_buf;
+  map<BUF_ROLE, shared_ptr<Persistent<ArrayBuffer>>> _backing_bufs;
   
   GLuint newId() { return ++_last_id; }
 };
