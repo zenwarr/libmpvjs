@@ -22,6 +22,10 @@ struct PlayerOptions {
   string log_level;
 };
 
+struct ctx_dim {
+  int width = 0, height = 0;
+};
+
 map<string, mpv_event_id> handler_events = {
   { "onLog", MPV_EVENT_LOG_MESSAGE },
   { "onFileStart", MPV_EVENT_START_FILE },
@@ -137,6 +141,38 @@ public:
                                                 _isolate->GetCurrentContext()->Global(), 1, args);
     }
   }
+
+  shared_ptr<Persistent<String>> ctx_width_prop, ctx_height_prop;
+  int64_t last_ctx_dim_update = 0;
+
+#define SEC_IN_MKS 1000000
+
+  const ctx_dim &getContextDims() {
+    int64_t cur_time = mpv_get_time_us(_mpv);
+    if (!last_ctx_dim_update || (last_ctx_dim_update + SEC_IN_MKS / 2) < cur_time) {
+      if (!ctx_width_prop) {
+        ctx_width_prop = pers_ptr(new Persistent<String>(_isolate, make_string(_isolate, "drawingBufferWidth")));
+        ctx_height_prop = pers_ptr(new Persistent<String>(_isolate, make_string(_isolate, "drawingBufferHeight")));
+      }
+
+      Local<Object> rc = localContext();
+      Local<Context> ctx = _isolate->GetCurrentContext();
+
+      Maybe<int64_t> mw = rc->Get(ctx, ctx_width_prop->Get(_isolate)).ToLocalChecked()->IntegerValue(ctx);
+      Maybe<int64_t> mh = rc->Get(ctx, ctx_height_prop->Get(_isolate)).ToLocalChecked()->IntegerValue(ctx);
+
+      if (mw.IsJust() && mh.IsJust()) {
+        _dim.width = static_cast<int>(mw.ToChecked());
+        _dim.height = static_cast<int>(mh.ToChecked());
+
+        DEBUG("updated context dims, width = %d and height = %d\n", _dim.width, _dim.height);
+      }
+    }
+
+    return _dim;
+  }
+
+#undef SEC_IN_MKS
 
   /** GL functions implementation **/
 
@@ -1286,6 +1322,7 @@ public:
   size_t unpack_alignment = 1, pack_alignment = 1;
   bool pixel_unpack_buffer_bound = false, pixel_pack_buffer_bound = false;
   map<BUF_ROLE, shared_ptr<Persistent<ArrayBuffer>>> _backing_bufs;
+  ctx_dim _dim;
   
   GLuint newId() { return ++_last_id; }
 };
@@ -1313,8 +1350,11 @@ static uv_async_t async_handle, async_wakeup_handle;
 void do_update(uv_async_t *) {
   if (MPImpl::singleton()) {
     GL_DEBUG("mpv_opengl_cb_draw: drawing a frame...\n");
-    HandleScope scope(MPImpl::singleton()->_isolate);
-    mpv_opengl_cb_draw(MPImpl::singleton()->gl(), 0, 1280, -720);
+
+    MPImpl *impl = MPImpl::singleton();
+
+    const ctx_dim &dim = impl->getContextDims();
+    mpv_opengl_cb_draw(impl->gl(), 0, dim.width, -dim.height);
   }
 }
 
