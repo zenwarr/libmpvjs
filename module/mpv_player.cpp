@@ -65,7 +65,7 @@ public:
          const shared_ptr<Persistent<Object>> &canvas,
          const shared_ptr<Persistent<Object>> &renderingContext,
          const PlayerOptions &opts
-  ) : _isolate(isolate), _canvas(canvas), _renderingContext(renderingContext), _options(opts) {
+  ) : _options(opts), _isolate(isolate), _canvas(canvas), _renderingContext(renderingContext) {
     _singleton = this;
   }
 
@@ -650,7 +650,7 @@ public:
     }
 
     TryCatch try_catch(_isolate);
-    auto r = callMethod("readPixels", { MKI(x), MKI(y), MKI(width), MKI(height), MKI(format), MKI(type), buf_view });
+    callMethod("readPixels", { MKI(x), MKI(y), MKI(width), MKI(height), MKI(format), MKI(type), buf_view });
     if (try_catch.HasCaught()) {
       try_catch.ReThrow();
       return;
@@ -667,7 +667,7 @@ public:
       auto buf_data = static_cast<const GLubyte*>(buf->GetContents().Data());
       auto dst_data = static_cast<GLubyte*>(data);
 
-      for (size_t q = 0; q < height; ++q) {
+      for (GLsizei q = 0; q < height; ++q) {
         memcpy(dst_data, buf_data, width * bytes_per_pixel);
         buf_data += width * bytes_per_pixel;
         dst_data += row_bytes_aligned;
@@ -1049,7 +1049,7 @@ public:
       auto buf_data = static_cast<GLubyte*>(buf->GetContents().Data());
       auto src_data = static_cast<const GLubyte*>(data);
 
-      for (size_t q = 0; q < height; ++q) {
+      for (GLsizei q = 0; q < height; ++q) {
         memcpy(buf_data, src_data, width * bytes_per_pixel);
         buf_data += width * bytes_per_pixel;
         src_data += row_bytes_aligned;
@@ -1191,8 +1191,8 @@ public:
   PlayerOptions _options;
   multimap<string, shared_ptr<Persistent<Object>>> _observers;
   Isolate *_isolate;
-  shared_ptr<Persistent<Object>> _canvas = nullptr;
-  shared_ptr<Persistent<Object>> _renderingContext = nullptr;
+  shared_ptr<Persistent<Object>> _canvas;
+  shared_ptr<Persistent<Object>> _renderingContext;
   mpv_handle *_mpv = nullptr;
   mpv_opengl_cb_context *_mpv_gl = nullptr;
   map<int, string> gl_props;
