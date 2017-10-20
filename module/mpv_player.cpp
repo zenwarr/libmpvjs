@@ -56,6 +56,7 @@ shared_ptr<Persistent<T>> pers_ptr(Persistent<T> *p) {
 #define MKI(I) Integer::New(_isolate, I)
 #define MKIU(I) Integer::NewFromUnsigned(_isolate, I)
 #define MKN(N) Number::New(_isolate, N)
+#define ARG_COUNT (sizeof(args) / sizeof(args[0]))
 
 typedef map<GLuint, shared_ptr<Persistent<Value>>> ObjectStore;
 
@@ -261,7 +262,8 @@ public:
       return;
     }
 
-    callMethod("attachShader", { prog_iter->second->Get(_isolate), sh_iter->second->Get(_isolate) });
+    Local<Value> args[2] = { prog_iter->second->Get(_isolate), sh_iter->second->Get(_isolate) };
+    callMethod("attachShader", ARG_COUNT, args);
   }
 
   void glCompileShader(GLuint shader_id) {
@@ -301,7 +303,8 @@ public:
       shader_source = String::NewFromUtf8(_isolate, string[0]);
     }
 
-    callMethod("shaderSource", { sh_iter->second->Get(_isolate), shader_source });
+    Local<Value> args[2] = { sh_iter->second->Get(_isolate), shader_source };
+    callMethod("shaderSource", ARG_COUNT, args);
   }
 
   void glBindAttribLocation(GLuint program_id, GLuint index, const GLchar *name) {
@@ -313,8 +316,8 @@ public:
       return;
     }
 
-    callMethod("bindAttribLocation", { prog_iter->second->Get(_isolate), MKI(index),
-                                       String::NewFromUtf8(_isolate, name) });
+    Local<Value> args[3] = { prog_iter->second->Get(_isolate), MKI(index), String::NewFromUtf8(_isolate, name) };
+    callMethod("bindAttribLocation", ARG_COUNT, args);
   }
 
   void glBindBuffer(GLenum target, GLuint buffer) {
@@ -329,7 +332,8 @@ public:
     }
 
     if (buffer == 0) {
-      callMethod("bindBuffer", { MKI(target), Null(_isolate) });
+      Local<Value> args[2] = { MKI(target), Null(_isolate) };
+      callMethod("bindBuffer", ARG_COUNT, args);
       return;
     }
 
@@ -339,14 +343,16 @@ public:
       return;
     }
 
-    callMethod("bindBuffer", { MKI(target), buffer_iter->second->Get(_isolate) });
+    Local<Value> args[2] = { MKI(target), buffer_iter->second->Get(_isolate) };
+    callMethod("bindBuffer", ARG_COUNT, args);
   }
 
   void glBindTexture(GLenum target, GLuint texture) {
     GL_DEBUG("glBindTexture\n");
 
     if (texture == 0) {
-      callMethod("bindTexture", {MKI(target), Null(_isolate)});
+      Local<Value> args[2] = { MKI(target), Null(_isolate) };
+      callMethod("bindTexture", ARG_COUNT, args);
       return;
     }
 
@@ -356,13 +362,15 @@ public:
       return;
     }
 
-    callMethod("bindTexture", { MKI(target), texture_iter->second->Get(_isolate) });
+    Local<Value> args[2] = { MKI(target), texture_iter->second->Get(_isolate) };
+    callMethod("bindTexture", ARG_COUNT, args);
   }
 
   void glBlendFuncSeparate(GLenum srcRGB, GLenum dstRGB, GLenum srcAplha, GLenum dstAplha) {
     GL_DEBUG("glBlendFuncSeparate\n");
 
-    callMethod("blendFuncSeparate", { MKI(srcRGB), MKI(dstRGB), MKI(srcAplha), MKI(dstAplha) });
+    Local<Value> args[4] = { MKI(srcRGB), MKI(dstRGB), MKI(srcAplha), MKI(dstAplha) };
+    callMethod("blendFuncSeparate", ARG_COUNT, args);
   }
 
   void glBufferData(GLenum target, GLsizeiptr size, const GLvoid *data, GLenum usage) {
@@ -374,14 +382,16 @@ public:
     }
 
     if (!data) {
-      callMethod("bufferData", { MKI(target),
-                                 Integer::NewFromUnsigned(_isolate, static_cast<uint32_t>(size)),
-                                 MKI(usage) });
+      Local<Value> args[3] = { MKI(target),
+                               Integer::NewFromUnsigned(_isolate, static_cast<uint32_t>(size)),
+                               MKI(usage) };
+      callMethod("bufferData", ARG_COUNT, args);
     } else {
       auto buf = ArrayBuffer::New(_isolate, static_cast<size_t>(size));
       memcpy(buf->GetContents().Data(), data, static_cast<size_t>(size));
 
-      callMethod("bufferData", { MKI(target), buf, MKI(usage) });
+      Local<Value> args[3] = { MKI(target), buf, MKI(usage) };
+      callMethod("bufferData", ARG_COUNT, args);
     }
   }
 
@@ -400,9 +410,10 @@ public:
     auto buf = ArrayBuffer::New(_isolate, static_cast<size_t>(size));
     memcpy(buf->GetContents().Data(), data, static_cast<size_t>(size));
 
-    callMethod("bufferSubData", { MKI(target),
-                                  Integer::NewFromUnsigned(_isolate, static_cast<uint32_t>(offset)),
-                                  buf });
+    Local<Value> args[3] = { MKI(target),
+                             Integer::NewFromUnsigned(_isolate, static_cast<uint32_t>(offset)),
+                             buf };
+    callMethod("bufferSubData", ARG_COUNT, args);
   }
 
   void glClear(GLbitfield mask) {
@@ -414,7 +425,8 @@ public:
   void glClearColor(GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha) {
     GL_DEBUG("glClearColor\n");
 
-    callMethod("clearColor", { MKN(red), MKN(green), MKN(blue), MKN(alpha) });
+    Local<Value> args[] = { MKN(red), MKN(green), MKN(blue), MKN(alpha) };
+    callMethod("clearColor", ARG_COUNT, args);
   }
 
   void glDeleteBuffers(GLsizei n, const GLuint *buffers) {
@@ -456,7 +468,8 @@ public:
   void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     GL_DEBUG("glDrawArrays\n");
 
-    callMethod("drawArrays", { MKI(mode), MKI(first), MKI(count) });
+    Local<Value> args[3] = { MKI(mode), MKI(first), MKI(count) };
+    callMethod("drawArrays", ARG_COUNT, args);
   }
 
   void glFinish() {
@@ -516,8 +529,9 @@ public:
       return -1;
     }
 
-    auto r = callMethod("getAttribLocation", { prog_iter->second->Get(_isolate),
-                                               String::NewFromUtf8(_isolate, name) });
+    Local<Value> args[2] = { prog_iter->second->Get(_isolate),
+                             String::NewFromUtf8(_isolate, name) };
+    auto r = callMethod("getAttribLocation", ARG_COUNT, args);
     return r.IsEmpty() ? -1 : static_cast<GLint>(r.As<Integer>()->IntegerValue());
   }
 
@@ -602,8 +616,9 @@ public:
       return -1;
     }
 
-    auto r = callMethod("getUniformLocation", { prog_iter->second->Get(_isolate),
-                                                String::NewFromUtf8(_isolate, name) });
+    Local<Value> args[2] = { prog_iter->second->Get(_isolate),
+                             String::NewFromUtf8(_isolate, name) };
+    auto r = callMethod("getUniformLocation", ARG_COUNT, args);
     return r.IsEmpty() ? -1 : storeObject(_uniforms, r);
   }
 
@@ -621,7 +636,8 @@ public:
       return;
     }
 
-    callMethod("pixelStorei", { MKI(pname), MKI(param) });
+    Local<Value> args[2] = { MKI(pname), MKI(param) };
+    callMethod("pixelStorei", ARG_COUNT, args);
   }
 
   void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *data) {
@@ -634,8 +650,9 @@ public:
     if (pixel_pack_buffer_bound) {
       // read pixels to bound buffer, treat pointer as an offset (hope we are not gonna use huuuuge buffers)
       auto offset = reinterpret_cast<intptr_t>(data);
-      callMethod("readPixels", { MKI(x), MKI(y), MKI(width), MKI(height), MKI(format),
-                                 MKI(type), MKIU(static_cast<uint32_t>(offset)) });
+      Local<Value> args[7] = { MKI(x), MKI(y), MKI(width), MKI(height), MKI(format),
+                            MKI(type), MKIU(static_cast<uint32_t>(offset)) };
+      callMethod("readPixels", ARG_COUNT, args);
       return;
     }
 
@@ -650,7 +667,8 @@ public:
     }
 
     TryCatch try_catch(_isolate);
-    callMethod("readPixels", { MKI(x), MKI(y), MKI(width), MKI(height), MKI(format), MKI(type), buf_view });
+    Local<Value> args[7] = { MKI(x), MKI(y), MKI(width), MKI(height), MKI(format), MKI(type), buf_view };
+    callMethod("readPixels", ARG_COUNT, args);
     if (try_catch.HasCaught()) {
       try_catch.ReThrow();
       return;
@@ -678,7 +696,8 @@ public:
   void glScissor(GLint x, GLint y, GLsizei width, GLsizei height) {
     GL_DEBUG("glScissor\n");
 
-    callMethod("scissor", { MKI(x), MKI(y), MKI(width), MKI(height) });
+    Local<Value> args[4] = { MKI(x), MKI(y), MKI(width), MKI(height) };
+    callMethod("scissor", ARG_COUNT, args);
   }
 
   void glTexImage2D(GLenum target, GLint level, GLint internal_format, GLsizei width,
@@ -693,17 +712,19 @@ public:
     if (pixel_unpack_buffer_bound) {
       // load data from bound buffer
       auto offset = reinterpret_cast<intptr_t>(data);
-      callMethod("texImage2D", { MKI(target), MKI(level), MKI(internal_format), MKI(width),
-                                 MKI(height), MKI(border), MKI(format), MKI(type),
-                                 MKIU(static_cast<uint32_t>(offset)) });
+      Local<Value> args[9] = { MKI(target), MKI(level), MKI(internal_format), MKI(width),
+                               MKI(height), MKI(border), MKI(format), MKI(type),
+                               MKIU(static_cast<uint32_t>(offset)) };
+      callMethod("texImage2D", ARG_COUNT, args);
       return;
     }
 
     if (!data) {
       // data may be a null pointer. In this case, texture memory is allocated to accommodate
       // a texture of width width and height height.
-      callMethod("texImage2D", { MKI(target), MKI(level), MKI(internal_format), MKI(width),
-                                 MKI(height), MKI(border), MKI(format), MKI(type), Null(_isolate) });
+      Local<Value> args[9] = { MKI(target), MKI(level), MKI(internal_format), MKI(width),
+                               MKI(height), MKI(border), MKI(format), MKI(type), Null(_isolate) };
+      callMethod("texImage2D", ARG_COUNT, args);
     } else {
       auto bufs = getTexBuffers(type, format, width, height, data);
       if (bufs.second.IsEmpty()) {
@@ -711,15 +732,17 @@ public:
         return;
       }
 
-      callMethod("texImage2D", { MKI(target), MKI(level), MKI(internal_format), MKI(width),
-                                 MKI(height), MKI(border), MKI(format), MKI(type), bufs.second, MKI(0) });
+      Local<Value> args[10] = { MKI(target), MKI(level), MKI(internal_format), MKI(width),
+                                MKI(height), MKI(border), MKI(format), MKI(type), bufs.second, MKI(0) };
+      callMethod("texImage2D", ARG_COUNT, args);
     }
   }
 
   void glTexParameteri(GLenum target, GLenum pname, GLint param) {
     GL_DEBUG("glTexParameteri\n");
 
-    callMethod("texParameteri", { MKI(target), MKI(pname), MKI(param) });
+    Local<Value> args[3] = { MKI(target), MKI(pname), MKI(param) };
+    callMethod("texParameteri", ARG_COUNT, args);
   }
 
   void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
@@ -729,8 +752,9 @@ public:
     if (pixel_unpack_buffer_bound) {
       // load data from bound buffer
       auto offset = reinterpret_cast<intptr_t>(pixels);
-      callMethod("texSubImage2D", { MKI(target), MKI(level), MKI(xoffset), MKI(yoffset),
-                                    MKI(width), MKI(height), MKI(format), MKI(type), MKI(offset) });
+      Local<Value> args[9] = { MKI(target), MKI(level), MKI(xoffset), MKI(yoffset),
+                               MKI(width), MKI(height), MKI(format), MKI(type), MKI(offset) };
+      callMethod("texSubImage2D", ARG_COUNT, args);
       return;
     }
 
@@ -740,32 +764,37 @@ public:
       return;
     }
 
-    callMethod("texSubImage2D", { MKI(target), MKI(level), MKI(xoffset), MKI(yoffset),
-                                  MKI(width), MKI(height), MKI(format), MKI(type), bufs.second });
+    Local<Value> args[9] = { MKI(target), MKI(level), MKI(xoffset), MKI(yoffset),
+                             MKI(width), MKI(height), MKI(format), MKI(type), bufs.second };
+    callMethod("texSubImage2D", ARG_COUNT, args);
   }
 
   void glUniform1f(GLint location, GLfloat v0) {
     GL_DEBUG("glUniform1f\n");
 
-    callLocationMethod("uniform1f", location, { Local<Value>(), MKN(v0) });
+    Local<Value> args[2] = { Local<Value>(), MKN(v0) };
+    callLocationMethod("uniform1f", location, ARG_COUNT, args);
   }
 
   void glUniform2f(GLint location, GLfloat v0, GLfloat v1) {
     GL_DEBUG("glUniform2f\n");
 
-    callLocationMethod("uniform2f", location, { Local<Value>(), MKN(v0), MKN(v1) });
+    Local<Value> args[3] = { Local<Value>(), MKN(v0), MKN(v1) };
+    callLocationMethod("uniform2f", location, ARG_COUNT, args);
   }
 
   void glUniform3f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2) {
     GL_DEBUG("glUniform3f\n");
 
-    callLocationMethod("uniform3f", location, { Local<Value>(), MKN(v0), MKN(v1), MKN(v2) });
+    Local<Value> args[4] = { Local<Value>(), MKN(v0), MKN(v1), MKN(v2) };
+    callLocationMethod("uniform3f", location, ARG_COUNT, args);
   }
 
   void glUniform1i(GLint location, GLint v0) {
     GL_DEBUG("glUniform1i\n");
 
-    callLocationMethod("uniform1i", location, { Local<Value>(), MKN(v0) });
+    Local<Value> args[2] = { Local<Value>(), MKN(v0) };
+    callLocationMethod("uniform1i", location, ARG_COUNT, args);
   }
 
   void glUniformMatrix2fv(GLint location, GLsizei matrix_count, GLboolean transpose, const GLfloat *value) {
@@ -796,22 +825,25 @@ public:
 
     auto low_pointer = static_cast<uint32_t>(reinterpret_cast<uint64_t>(pointer));
 
-    callMethod("vertexAttribPointer", { MKI(index), MKI(size), MKI(type),
-                                        Boolean::New(_isolate, normalized), MKI(stride),
-                                        Integer::NewFromUnsigned(_isolate, low_pointer) });
+    Local<Value> args[6] = { MKI(index), MKI(size), MKI(type),
+                             Boolean::New(_isolate, normalized), MKI(stride),
+                             Integer::NewFromUnsigned(_isolate, low_pointer) };
+    callMethod("vertexAttribPointer", ARG_COUNT, args);
   }
 
   void glViewport(GLint x, GLint y, GLsizei width, GLsizei height) {
     GL_DEBUG("glViewport\n");
 
-    callMethod("viewport", { MKI(x), MKI(y), MKI(width), MKI(height) });
+    Local<Value> args[4] = { MKI(x), MKI(y), MKI(width), MKI(height) };
+    callMethod("viewport", ARG_COUNT, args);
   }
 
   void glBindFramebuffer(GLenum target, GLuint framebuffer) {
     GL_DEBUG("glBindFramebuffer\n");
 
     if (framebuffer == 0) {
-      callMethod("bindFramebuffer", { MKI(target), Null(_isolate) });
+      Local<Value> args[2] = { MKI(target), Null(_isolate) };
+      callMethod("bindFramebuffer", ARG_COUNT, args);
       return;
     }
 
@@ -821,7 +853,8 @@ public:
       return;
     }
 
-    callMethod("bindFramebuffer", { MKI(target), fb_iter->second->Get(_isolate) });
+    Local<Value> args[2] = { MKI(target), fb_iter->second->Get(_isolate) };
+    callMethod("bindFramebuffer", ARG_COUNT, args);
   }
 
   void glGenFramebuffers(GLsizei n, GLuint *ids) {
@@ -863,8 +896,9 @@ public:
       return;
     }
 
-    callMethod("framebufferTexture2D", { MKI(target), MKI(attachment), MKI(textarget),
-                                         tex_iter->second->Get(_isolate), MKI(level) });
+    Local<Value> args[5] = { MKI(target), MKI(attachment), MKI(textarget),
+                             tex_iter->second->Get(_isolate), MKI(level) };
+    callMethod("framebufferTexture2D", ARG_COUNT, args);
   }
 
   void glGetFramebufferAttachmentParameteriv(GLenum target, GLenum attachment, GLenum pname, GLint *params) {
@@ -874,7 +908,8 @@ public:
       return;
     }
 
-    auto r = callMethod("getFramebufferAttachmentParameter", { MKI(target), MKI(pname), MKI(pname) }).As<Integer>();
+    Local<Value> args[3] = { MKI(target), MKI(pname), MKI(pname) };
+    auto r = callMethod("getFramebufferAttachmentParameter", ARG_COUNT, args).As<Integer>();
     if (!r.IsEmpty()) {
       *params = static_cast<GLint>(r->IntegerValue());
     }
@@ -911,9 +946,8 @@ public:
     return pers;
   }
 
-  Local<Value> callMethod(const string &method_name, const vector<Local<Value>> &args) {
-    return localMethod(method_name)->Call(localContext(), static_cast<int>(args.size()),
-                                          const_cast<Local<Value>*>(args.data()));
+  Local<Value> callMethod(const string &method_name, int argc, const Local<Value> *args) {
+    return localMethod(method_name)->Call(localContext(), argc, const_cast<Local<Value>*>(args));
   }
 
   Local<Value> callMethod(const string &method_name, const Local<Value> &arg) {
@@ -1081,7 +1115,8 @@ public:
       return;
     }
 
-    auto result = callMethod(webgl_method, { obj_iter->second->Get(_isolate), MKI(pname) } );
+    Local<Value> args[2] = { obj_iter->second->Get(_isolate), MKI(pname) };
+    auto result = callMethod(webgl_method, ARG_COUNT, args);
     if (result->IsNumber() || result->IsNumberObject()) {
       auto maybe_int = result->IntegerValue(_isolate->GetCurrentContext());
       if (maybe_int.IsJust()) {
@@ -1146,7 +1181,7 @@ public:
     }
   }
 
-  void callLocationMethod(const string &webgl_method, GLint location_id, vector<Local<Value>> &&args) {
+  void callLocationMethod(const string &webgl_method, GLint location_id, int argc, Local<Value> *args) {
     auto uni_iter = _uniforms.find(location_id);
     if (uni_iter == _uniforms.end()) {
       // set GL_INVALID_VALUE
@@ -1154,7 +1189,7 @@ public:
     }
 
     args[0] = uni_iter->second->Get(_isolate);
-    callMethod(webgl_method, args);
+    callMethod(webgl_method, argc, args);
   }
 
   void uniformMatrix(const string &method, int matrix_size, GLint location, GLboolean transpose,
@@ -1171,7 +1206,8 @@ public:
     memcpy(buf->GetContents().Data(), value, matrix_elem_count * sizeof(GLfloat));
     auto buf_view = Float32Array::New(buf, 0, static_cast<size_t>(matrix_elem_count));
 
-    callMethod(method, { loc_iter->second->Get(_isolate), Boolean::New(_isolate, transpose), buf_view });
+    Local<Value> args[3] = { loc_iter->second->Get(_isolate), Boolean::New(_isolate, transpose), buf_view };
+    callMethod(method, ARG_COUNT, args);
   }
 
   void _throw_js(const char *msg) {

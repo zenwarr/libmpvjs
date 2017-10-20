@@ -5,7 +5,7 @@
 #include <memory>
 
 #define BUILD_DEBUG
-#define BUILD_GL_DEBUG
+//#define BUILD_GL_DEBUG
 
 #ifdef BUILD_DEBUG
 #define DEBUG(...) std::fprintf(stderr, __VA_ARGS__)
