@@ -610,6 +610,11 @@ public:
       unpack_alignment = param;
       // set GL_NO_ERROR
       return;
+    } else if (pname == GL_PACK_ALIGNMENT) {
+      GL_DEBUG("updating pack alignment, setting it to %d\n", param);
+      pack_alignment = param;
+      // set GL_NO_ERROR
+      return;
     } else if (pname == GL_UNPACK_ROW_LENGTH) {
       _throw_js(("glPixelStorei called with unsupported pname = " + to_string(param)).c_str());
       return;
@@ -627,39 +632,39 @@ public:
 
     //todo: handle bound buffer
 
-    Local<ArrayBuffer> buf;
-    Local<Value> buf_view;
+    size_t pixel_count = static_cast<size_t>(width) * static_cast<size_t>(height);
+    size_t bytes_per_pixel = bytesPerPixel(type, format);
 
-    uint32_t pixel_count = static_cast<uint32_t>(width) * static_cast<uint32_t>(height);
-
-    switch (type) {
-      case GL_UNSIGNED_BYTE:
-        buf = ArrayBuffer::New(_isolate, pixel_count * sizeof(GLubyte));
-        buf_view = Uint8Array::New(buf, 0, static_cast<size_t>(pixel_count));
-        break;
-
-      case GL_UNSIGNED_SHORT:
-      case GL_UNSIGNED_SHORT_5_6_5:
-      case GL_UNSIGNED_SHORT_4_4_4_4:
-      case GL_UNSIGNED_SHORT_5_5_5_1:
-        buf = ArrayBuffer::New(_isolate, pixel_count * sizeof(GLushort));
-        buf_view = Uint16Array::New(buf, 0, static_cast<size_t>(pixel_count));
-        break;
-
-      case GL_FLOAT:
-        buf = ArrayBuffer::New(_isolate, pixel_count * sizeof(GLfloat));
-        buf_view = Float32Array::New(buf, 0, static_cast<size_t>(pixel_count));
-        break;
-
-      default:
-        _throw_js(("glReadPixels: unsupported data format = " + to_string(type)).c_str());
-        return;
+    Local<ArrayBuffer> buf = ArrayBuffer::New(_isolate, pixel_count * bytes_per_pixel);
+    Local<Value> buf_view = bufForType(type, buf, pixel_count);
+    if (buf_view.IsEmpty()) {
+      _throw_js(("glReadPixels: unsupported data format = " + to_string(type)).c_str());
+      return;
     }
 
     TryCatch try_catch(_isolate);
     auto r = callMethod("readPixels", { MKI(x), MKI(y), MKI(width), MKI(height), MKI(format), MKI(type), buf_view });
-    if (!try_catch.HasCaught() && glGetError() == GL_NO_ERROR) {
+    if (try_catch.HasCaught()) {
+      try_catch.ReThrow();
+      return;
+    }
+    if (glGetError() != GL_NO_ERROR) {
+      _throw_js("glReadPixels: error while reading pixels");
+      return;
+    }
+
+    size_t row_bytes_aligned = alignToPackBoundary(width * bytes_per_pixel);
+    if (row_bytes_aligned == width * bytes_per_pixel) {
       memcpy(data, buf->GetContents().Data(), buf->ByteLength());
+    } else {
+      auto buf_data = static_cast<const GLubyte*>(buf->GetContents().Data());
+      auto dst_data = static_cast<GLubyte*>(data);
+
+      for (size_t q = 0; q < height; ++q) {
+        memcpy(dst_data, buf_data, width * bytes_per_pixel);
+        buf_data += width * bytes_per_pixel;
+        dst_data += row_bytes_aligned;
+      }
     }
   }
 
@@ -687,6 +692,10 @@ public:
                                  MKI(height), MKI(border), MKI(format), MKI(type), Null(_isolate) });
     } else {
       auto bufs = getTexBuffers(type, format, width, height, data);
+      if (bufs.second.IsEmpty()) {
+        _throw_js(("glTexImage2D: unsupported type: " + to_string(type)).c_str());
+        return;
+      }
 
       callMethod("texImage2D", { MKI(target), MKI(level), MKI(internal_format), MKI(width),
                                  MKI(height), MKI(border), MKI(format), MKI(type), bufs.second, MKI(0) });
@@ -706,6 +715,10 @@ public:
     //TODO: handle PIXEL_UNPACK_BUFFER
 
     auto bufs = getTexBuffers(type, format, width, height, pixels);
+    if (bufs.second.IsEmpty()) {
+      _throw_js(("glTexSubImage2D: unsupported type: " + to_string(type)).c_str());
+      return;
+    }
 
     callMethod("texSubImage2D", { MKI(target), MKI(level), MKI(xoffset), MKI(yoffset),
                                   MKI(width), MKI(height), MKI(format), MKI(type), bufs.second });
@@ -909,8 +922,16 @@ public:
     return 0;
   }
 
-  uint32_t alignToUnpackBoundary(uint32_t value) {
-    return (value + unpack_alignment - 1) & ~(unpack_alignment - 1);
+  size_t alignToUnpackBoundary(size_t value) {
+    return alignToBoundary(value, unpack_alignment);
+  }
+
+  size_t alignToPackBoundary(size_t value) {
+    return alignToBoundary(value, pack_alignment);
+  }
+
+  static size_t alignToBoundary(size_t value, size_t boundary) {
+    return (value + boundary - 1) & ~(boundary - 1);
   }
 
   static size_t bytesPerPixel(GLenum type, GLenum format) {
@@ -921,6 +942,7 @@ public:
       case GL_UNSIGNED_SHORT_5_6_5:               return 2;
       case GL_UNSIGNED_SHORT_8_8_APPLE:           return 2;
       case GL_UNSIGNED_SHORT_8_8_REV_APPLE:       return 2;
+      default:                                    break;
     }
 
     switch (type) {
@@ -960,60 +982,61 @@ public:
     return type_c * format_c;
   }
 
-  pair<Local<ArrayBuffer>, Local<Value>> getTexBuffers(GLenum type, GLenum format, GLsizei width,
-                                                             GLsizei height, const GLvoid *data) {
-    Local<ArrayBuffer> buf;
-    Local<Value> buf_view;
-
-    GLsizei item_count = width * height;
-
+  Local<Value> bufForType(GLenum type, const Local<ArrayBuffer> &buf, size_t pixel_count) {
     switch (type) {
-      case GL_UNSIGNED_BYTE: {
-        buf = ArrayBuffer::New(_isolate, width * sizeof(GLubyte) * height);
+      case GL_UNSIGNED_BYTE:
+        return Uint8Array::New(buf, 0, pixel_count);
+        break;
 
-        size_t row_bytes = alignToUnpackBoundary(width * sizeof(GLubyte));
-        if (row_bytes == width * sizeof(GLubyte)) {
-          memcpy(buf->GetContents().Data(), data, buf->ByteLength());
-        } else {
-          auto buf_data = static_cast<GLubyte*>(buf->GetContents().Data());
-          auto src_data = static_cast<const GLubyte*>(data);
-          for (size_t j = 0; j < height; ++j) {
-            memcpy(buf_data + (width * sizeof(GLubyte) * j), src_data + row_bytes * j, width * sizeof(GLubyte));
-          }
-        }
+      case GL_UNSIGNED_SHORT:
+      case GL_UNSIGNED_SHORT_5_6_5:
+      case GL_UNSIGNED_SHORT_4_4_4_4:
+      case GL_UNSIGNED_SHORT_5_5_5_1:
+      case GL_HALF_FLOAT:
+        return Uint16Array::New(buf, 0, pixel_count);
+        break;
 
-        buf_view = Uint8Array::New(buf, 0, static_cast<size_t>(width * height));
-      } break;
+      case GL_UNSIGNED_INT:
+      case GL_UNSIGNED_INT_24_8:
+        return Uint32Array::New(buf, 0, pixel_count);
+        break;
 
-//      case GL_UNSIGNED_SHORT:
-//      case GL_UNSIGNED_SHORT_5_6_5:
-//      case GL_UNSIGNED_SHORT_4_4_4_4:
-//      case GL_UNSIGNED_SHORT_5_5_5_1:
-//      case GL_HALF_FLOAT:
-//        buf = ArrayBuffer::New(_isolate, item_count * sizeof(GLushort));
-//        memcpy(buf->GetContents().Data(), data, item_count * sizeof(GLubyte));
-//        buf_view = Uint16Array::New(buf, 0, static_cast<size_t>(item_count));
-//        break;
-//
-//      case GL_UNSIGNED_INT:
-//      case GL_UNSIGNED_INT_24_8:
-//        buf = ArrayBuffer::New(_isolate, item_count * sizeof(GLuint));
-//        memcpy(buf->GetContents().Data(), data, item_count * sizeof(GLuint));
-//        buf_view = Uint32Array::New(buf, 0, static_cast<size_t>(item_count));
-//        break;
-//
-//      case GL_FLOAT:
-//        buf = ArrayBuffer::New(_isolate, item_count * sizeof(GLfloat));
-//        memcpy(buf->GetContents().Data(), data, item_count * sizeof(GLfloat));
-//        buf_view = Float32Array::New(buf, 0, static_cast<size_t>(item_count));
-//        break;
+      case GL_FLOAT:
+        return Float32Array::New(buf, 0, pixel_count);
+        break;
 
       default:
-        _throw_js(("initializing texture buffers: unsupported data format for getTexBuffers: type = "
-                   + to_string(type) + ", format = " + to_string(format)).c_str());
+        return Local<Value>();
+    }
+  }
+
+  pair<Local<ArrayBuffer>, Local<Value>> getTexBuffers(GLenum type, GLenum format, GLsizei width,
+                                                             GLsizei height, const GLvoid *data) {
+    size_t pixel_count = static_cast<size_t>(width) * static_cast<size_t>(height);
+    size_t bytes_per_pixel = bytesPerPixel(type, format);
+
+    // Unfortunately, chromium does not accept externalized buffers for webgl
+    // methods (externalized buffers in this case should be created by chromium itself), so we have to
+    // copy entire data to the new buffer and give ownership to v8.
+    Local<ArrayBuffer> buf = ArrayBuffer::New(_isolate, pixel_count * bytes_per_pixel);
+    size_t row_bytes_aligned = alignToUnpackBoundary(width * bytes_per_pixel);
+    if (row_bytes_aligned == width * bytes_per_pixel) {
+      // smooth rows, without gaps between them, we can copy it with one call
+      memcpy(buf->GetContents().Data(), data, buf->ByteLength());
+    } else {
+      // things got worse, there are alignment gaps between rows, and webgl does not support it.
+      // we have to copy rows one-by-one and skip alignment gaps
+      auto buf_data = static_cast<GLubyte*>(buf->GetContents().Data());
+      auto src_data = static_cast<const GLubyte*>(data);
+
+      for (size_t q = 0; q < height; ++q) {
+        memcpy(buf_data, src_data, width * bytes_per_pixel);
+        buf_data += width * bytes_per_pixel;
+        src_data += row_bytes_aligned;
+      }
     }
 
-    return { buf, buf_view };
+    return { buf, bufForType(type, buf, pixel_count) };
   }
 
   void getObjectiv(const char *webgl_method, const ObjectStore &store, GLuint object_id,
@@ -1161,7 +1184,7 @@ public:
   ObjectStore _framebuffers;
   map<GLint, shared_ptr<Persistent<Value>>> _uniforms;
   GLuint _last_id = 0;
-  int unpack_alignment = 1;
+  int unpack_alignment = 1, pack_alignment = 1;
   
   GLuint newId() { return ++_last_id; }
 };

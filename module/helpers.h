@@ -5,7 +5,7 @@
 #include <memory>
 
 #define BUILD_DEBUG
-//#define GL_DEBUG
+#define BUILD_GL_DEBUG
 
 #ifdef BUILD_DEBUG
 #define DEBUG(...) std::fprintf(stderr, __VA_ARGS__)
@@ -13,7 +13,7 @@
 #define DEBUG(...) do { } while (false)
 #endif
 
-#ifdef GL_DEBUG
+#ifdef BUILD_GL_DEBUG
 #define GL_DEBUG(...) std::fprintf(stderr, __VA_ARGS__)
 #else
 #define GL_DEBUG(...) do { } while (false)
