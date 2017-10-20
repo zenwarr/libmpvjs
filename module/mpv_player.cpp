@@ -1069,10 +1069,18 @@ public:
     size_t pixel_count = static_cast<size_t>(width) * static_cast<size_t>(height);
     size_t bytes_per_pixel = bytesPerPixel(type, format);
 
-    // Unfortunately, chromium does not accept externalized buffers for webgl
-    // methods (externalized buffers in this case should be created by chromium itself), so we have to
-    // copy entire data to the new buffer and give ownership to v8.
-    Local<ArrayBuffer> buf = ArrayBuffer::New(_isolate, pixel_count * bytes_per_pixel);
+    // Unfortunately, chromium does not accept externalized buffers for webgl methods (externalized buffers in this case should be created by chromium itself), so we have to copy entire data to the new buffer and give ownership to v8.
+    // mpv uploads frames as textures, so this function is a resource hog.
+    // Due to this, we should reuse a single buffer to avoid creating a ton of ArrayBuffers for each frame
+    if (!_backing_buf || _backing_buf->IsEmpty() ||
+        _backing_buf->Get(_isolate)->ByteLength() < pixel_count * bytes_per_pixel) {
+      _backing_buf.reset();
+      _backing_buf = pers_ptr(new Persistent<ArrayBuffer>(_isolate,
+                                                          ArrayBuffer::New(_isolate, pixel_count * bytes_per_pixel)));
+    }
+
+    Local<ArrayBuffer> buf = _backing_buf->Get(_isolate);
+
     size_t row_bytes_aligned = alignToUnpackBoundary(width * bytes_per_pixel);
     if (row_bytes_aligned == width * bytes_per_pixel) {
       // smooth rows, without gaps between them, we can copy it with one call
@@ -1242,6 +1250,7 @@ public:
   GLuint _last_id = 0;
   int unpack_alignment = 1, pack_alignment = 1;
   bool pixel_unpack_buffer_bound = false, pixel_pack_buffer_bound = false;
+  shared_ptr<Persistent<ArrayBuffer>> _backing_buf;
   
   GLuint newId() { return ++_last_id; }
 };
