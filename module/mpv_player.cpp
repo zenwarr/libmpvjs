@@ -708,7 +708,7 @@ public:
     size_t bytes_per_pixel = bytesPerPixel(type, format);
 
     Local<ArrayBuffer> buf = backingBuffer(pixel_count * bytes_per_pixel, BB_GENERIC);
-    Local<Value> buf_view = bufForType(type, buf, pixel_count);
+    Local<Value> buf_view = bufForType(type, buf, pixel_count, bytes_per_pixel);
     if (buf_view.IsEmpty()) {
       _throw_js(("glReadPixels: unsupported data format = " + to_string(type)).c_str());
       return;
@@ -1092,10 +1092,10 @@ public:
     return type_c * format_c;
   }
 
-  Local<Value> bufForType(GLenum type, const Local<ArrayBuffer> &buf, size_t pixel_count) {
+  Local<Value> bufForType(GLenum type, const Local<ArrayBuffer> &buf, size_t pixel_count, size_t bytes_per_pixel) {
     switch (type) {
       case GL_UNSIGNED_BYTE:
-        return Uint8Array::New(buf, 0, pixel_count);
+        return Uint8Array::New(buf, 0, pixel_count * (bytes_per_pixel / sizeof(GLubyte)));
         break;
 
       case GL_UNSIGNED_SHORT:
@@ -1103,16 +1103,16 @@ public:
       case GL_UNSIGNED_SHORT_4_4_4_4:
       case GL_UNSIGNED_SHORT_5_5_5_1:
       case GL_HALF_FLOAT:
-        return Uint16Array::New(buf, 0, pixel_count);
+        return Uint16Array::New(buf, 0, pixel_count * (bytes_per_pixel / sizeof(GLushort)));
         break;
 
       case GL_UNSIGNED_INT:
       case GL_UNSIGNED_INT_24_8:
-        return Uint32Array::New(buf, 0, pixel_count);
+        return Uint32Array::New(buf, 0, pixel_count * (bytes_per_pixel / sizeof(GLuint)));
         break;
 
       case GL_FLOAT:
-        return Float32Array::New(buf, 0, pixel_count);
+        return Float32Array::New(buf, 0, pixel_count * (bytes_per_pixel / sizeof(GLfloat)));
         break;
 
       default:
@@ -1147,7 +1147,7 @@ public:
       }
     }
 
-    return { buf, bufForType(type, buf, pixel_count) };
+    return { buf, bufForType(type, buf, pixel_count, bytes_per_pixel) };
   }
 
   void getObjectiv(const char *webgl_method, const ObjectStore &store, GLuint object_id,
