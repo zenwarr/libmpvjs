@@ -42,7 +42,6 @@ map<string, mpv_event_id> handler_events = {
 template<class T>
 struct PersistentDisposer {
   void operator()(Persistent<T> *p)const {
-    DEBUG("disposing a persistent handle...\n");
     p->Reset();
     delete p;
   }
@@ -92,8 +91,6 @@ public:
   }
 
   void dispose() {
-    DEBUG("removing MPImpl instance...\n");
-
     if (_mpv) {
       mpv_terminate_destroy(_mpv);
     }
@@ -164,15 +161,18 @@ public:
       if (mw.IsJust() && mh.IsJust()) {
         _dim.width = static_cast<int>(mw.ToChecked());
         _dim.height = static_cast<int>(mh.ToChecked());
-
-        DEBUG("updated context dims, width = %d and height = %d\n", _dim.width, _dim.height);
       }
+
+      last_ctx_dim_update = cur_time;
     }
 
     return _dim;
   }
 
 #undef SEC_IN_MKS
+
+  shared_ptr<Persistent<Object>> _cmd_accesser;
+  shared_ptr<Persistent<ObjectTemplate>> _cmd_accesser_template;
 
   /** GL functions implementation **/
 
@@ -418,7 +418,7 @@ public:
 
   void glBufferData(GLenum target, GLsizeiptr size, const GLvoid *data, GLenum usage) {
     GL_DEBUG("glBufferData\n");
-    
+
     if (size < 0) {
       // set GL_INVALID_VALUE
       return;
@@ -440,12 +440,12 @@ public:
 
   void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const GLvoid *data) {
     GL_DEBUG("glBufferSubData\n");
-    
+
     if (size < 0) {
       // set GL_INVALID_VALUE
       return;
     }
-    
+
     if (size == 0) {
       return;
     }
@@ -474,7 +474,7 @@ public:
 
   void glDeleteBuffers(GLsizei n, const GLuint *buffers) {
     GL_DEBUG("glDeleteBuffers\n");
-    
+
     deleteObjects("deleteBuffer", _buffers, n, buffers);
   }
 
@@ -529,16 +529,16 @@ public:
 
   void glGenBuffers(GLsizei n, GLuint *buffers) {
     GL_DEBUG("glGenBuffers\n");
-    
+
     if (!buffers || n == 0) {
       return;
     }
-    
+
     if (n < 0) {
       // set GL_INVALID_VALUE
       return;
     }
-    
+
     for (int j = 0; j < n; ++j) {
       auto r = callMethod("createBuffer");
       buffers[j] = r.IsEmpty() ? 0 : storeObject(_buffers, r);
@@ -547,16 +547,16 @@ public:
 
   void glGenTextures(GLsizei n, GLuint *textures) {
     GL_DEBUG("glGenTextures\n");
-    
+
     if (!textures || n == 0) {
       return;
     }
-    
+
     if (n < 0) {
       // set GL_INVALID_VALUE
       return;
     }
-    
+
     for (int j = 0; j < n; ++j) {
       auto r = callMethod("createTexture");
       textures[j] = r.IsEmpty() ? 0 : storeObject(_textures, r);
@@ -1004,8 +1004,9 @@ public:
   }
 
   Local<Value> callMethod(const string &method_name) {
-    Local<Value> args[] = { };
-    return localMethod(method_name)->Call(_isolate->GetCurrentContext(), localContext(), 0, args).ToLocalChecked();
+    Local<Value> dummy;
+    return localMethod(method_name)
+      ->Call(_isolate->GetCurrentContext(), localContext(), 0, &dummy).ToLocalChecked();
   }
 
   template<class T>
@@ -1323,7 +1324,7 @@ public:
   bool pixel_unpack_buffer_bound = false, pixel_pack_buffer_bound = false;
   map<BUF_ROLE, shared_ptr<Persistent<ArrayBuffer>>> _backing_bufs;
   ctx_dim _dim;
-  
+
   GLuint newId() { return ++_last_id; }
 };
 
@@ -1352,6 +1353,8 @@ void do_update(uv_async_t *) {
     GL_DEBUG("mpv_opengl_cb_draw: drawing a frame...\n");
 
     MPImpl *impl = MPImpl::singleton();
+
+    HandleScope scope(impl->_isolate);
 
     const ctx_dim &dim = impl->getContextDims();
     mpv_opengl_cb_draw(impl->gl(), 0, dim.width, -dim.height);
@@ -1657,6 +1660,8 @@ MpvPlayer::MpvPlayer(Isolate *isolate,
 
 }
 
+mpv_handle *MpvPlayer::mpv()const { return d->_mpv; }
+
 /**
  * Initialize the native module
  */
@@ -1674,6 +1679,7 @@ void MpvPlayer::Init(Local<Object> exports) {
   NODE_SET_PROTOTYPE_METHOD(tpl, "setProperty", SetProperty);
   NODE_SET_PROTOTYPE_METHOD(tpl, "observeProperty", ObserveProperty);
   NODE_SET_PROTOTYPE_METHOD(tpl, "dispose", Dispose);
+  tpl->InstanceTemplate()->SetAccessor(make_string(i, "cmds"), CommandsAccessor);
 
   constructor.Reset(i, tpl->GetFunction(ctx).ToLocalChecked());
   exports->Set(ctx, make_string(i, MPV_PLAYER_CLASS), tpl->GetFunction(ctx).ToLocalChecked());
@@ -2034,4 +2040,98 @@ void MpvPlayer::Dispose(const FunctionCallbackInfo<Value> &args) {
 
   self->d->dispose();
   self->Unref(); // now v8 is free to remove this object
+}
+
+void MpvPlayer::CommandsAccessor(Local<String>, const PropertyCallbackInfo<Value> &info) {
+  Isolate *i = info.GetIsolate();
+  Local<Context> ctx = i->GetCurrentContext();
+  auto self = ObjectWrap::Unwrap<MpvPlayer>(info.Holder());
+
+  if (!self) {
+    throw_js(i, "MpvPlayer::cmds: player object is not initialized");
+    return;
+  }
+
+  if (!self->d->_cmd_accesser_template || self->d->_cmd_accesser_template->IsEmpty()) {
+    Local<ObjectTemplate> ac_tpl = ObjectTemplate::New(i);
+    ac_tpl->SetInternalFieldCount(1);
+    ac_tpl->SetHandler(NamedPropertyHandlerConfiguration(CommandAccessorProp));
+    self->d->_cmd_accesser_template.swap(pers_ptr(new Persistent<ObjectTemplate>(i, ac_tpl)));
+
+    Local<Object> ac = ac_tpl->NewInstance(ctx).ToLocalChecked();
+    ac->SetInternalField(0, info.Holder());
+    ac->Set(ctx, make_string(i, "player"), info.Holder());
+    self->d->_cmd_accesser.swap(pers_ptr(new Persistent<Object>(i, ac)));
+    info.GetReturnValue().Set(ac);
+  } else {
+    info.GetReturnValue().Set(self->d->_cmd_accesser->Get(i));
+  }
+}
+
+void MpvPlayer::CommandAccessorProp(Local<Name> prop_name, const PropertyCallbackInfo<Value> &info) {
+  Isolate *i = info.GetIsolate();
+  Local<Context> ctx = i->GetCurrentContext();
+  Local<Object> holder = info.Holder();
+
+  if (!prop_name->IsString() && !prop_name->IsStringObject()) {
+    throw_js(i, "MpvPlayer::cmds: command name is not a string");
+    return;
+  }
+
+  Local<Object> player_obj = holder->GetInternalField(0).As<Object>();
+  if (player_obj.IsEmpty()) {
+    throw_js(i, "MpvPlayer::cmds: internal error, invalid command accessor object");
+    return;
+  }
+
+  Local<Object> func_data = Object::New(i);
+  func_data->Set(make_string(i, "cmdName"), prop_name.As<String>());
+  func_data->Set(make_string(i, "player"), player_obj);
+
+  MaybeLocal<Function> func = Function::New(ctx, CommandAccessorCall, func_data, 0, ConstructorBehavior::kThrow);
+  info.GetReturnValue().Set(func.ToLocalChecked());
+}
+
+void MpvPlayer::CommandAccessorCall(const FunctionCallbackInfo<Value> &args) {
+  Isolate *i = args.GetIsolate();
+  Local<Context> ctx = i->GetCurrentContext();
+
+  Local<Object> func_data = args.Data().As<Object>();
+  if (func_data.IsEmpty()) {
+    throw_js(i, "MpvPlayer::cmds: invalid command accesser call");
+    return;
+  }
+
+  Local<Object> player_obj = func_data->Get(ctx, make_string(i, "player")).ToLocalChecked().As<Object>();
+  Local<String> cmd_name = func_data->Get(ctx, make_string(i, "cmdName")).ToLocalChecked().As<String>();
+
+  if (player_obj.IsEmpty() || cmd_name.IsEmpty()) {
+    throw_js(i, "MpvPlayer::cmds: invalid command accesser call");
+    return;
+  }
+
+  MpvPlayer *player = ObjectWrap::Unwrap<MpvPlayer>(player_obj.As<Object>());
+  string cmd_name_cc = string_to_cc(cmd_name.As<String>());
+
+  // one final check...
+  if (!player || cmd_name_cc.empty()) {
+    throw_js(i, "MpvPlayer::cmds: invalid command accesser call");
+    return;
+  }
+
+  AutoForeignMpvNode mpv_result;
+  AutoMpvNode mpv_args(cmd_name_cc, args);
+  if (!mpv_args.valid()) {
+    throw_js(i, "MpvPlayer::cmds: invalid arguments");
+    return;
+  }
+
+  int err_code = mpv_command_node(player->mpv(), mpv_args.ptr(), &mpv_result.node);
+
+  if (err_code != MPV_ERROR_SUCCESS) {
+    throw_js(i, mpv_error_string(err_code));
+    return;
+  }
+
+  args.GetReturnValue().Set(mpv_node_to_v8_value(i, &mpv_result.node));
 }

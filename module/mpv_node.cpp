@@ -67,7 +67,7 @@ Local<Value> mpv_node_to_v8_value(Isolate *i, const mpv_node *node) {
 
     case MPV_FORMAT_INT64:
       // consider returning this value as a string?
-      return Number::New(i, node->u.int64);
+      return Number::New(i, static_cast<double>(node->u.int64));
 
     case MPV_FORMAT_NODE_ARRAY: {
       auto arr = Array::New(i, node->u.list->num);
@@ -126,8 +126,33 @@ AutoMpvNode::AutoMpvNode(const FunctionCallbackInfo<Value> &args, int first_arg_
   }
 }
 
+AutoMpvNode::AutoMpvNode(const string &cmd_name, const FunctionCallbackInfo<Value> &cmd_args) {
+  if (cmd_args.Length() == 0) {
+    init_node_string(_node, cmd_name);
+  } else {
+    _node.format = MPV_FORMAT_NODE_ARRAY;
+    _node.u.list = new mpv_node_list;
+    _node.u.list->num = cmd_args.Length() + 1;
+    _node.u.list->keys = nullptr;
+    _node.u.list->values = new mpv_node[cmd_args.Length() + 1];
+
+    init_node_string(_node.u.list->values[0], cmd_name);
+
+    for (int q = 0; q < cmd_args.Length(); ++q) {
+      init_node(cmd_args.GetIsolate(), _node.u.list->values[q + 1], cmd_args[q]);
+    }
+  }
+}
+
 AutoMpvNode::~AutoMpvNode() {
   free_node(_node);
+}
+
+void AutoMpvNode::init_node_string(mpv_node &node, const string &str) {
+  node.format = MPV_FORMAT_STRING;
+  node.u.string = new char[str.size() + 1];
+  memcpy(node.u.string, str.c_str(), str.size());
+  node.u.string[str.size()] = 0;
 }
 
 void AutoMpvNode::init_node(Isolate *i, mpv_node &node, const Local<Value> &value) {

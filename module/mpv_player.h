@@ -8,15 +8,17 @@
 struct mpv_handle;
 struct mpv_opengl_cb_context;
 class MPImpl;
-class PlayerOptions;
+struct PlayerOptions;
 
 class MpvPlayer : public node::ObjectWrap {
 public:
   static void Init(v8::Local<v8::Object> exports);
 
+  mpv_handle *mpv()const;
+
 private:
   std::unique_ptr<MPImpl> d;
-  
+
   MpvPlayer(v8::Isolate *isolate,
             const std::shared_ptr<v8::Persistent<v8::Object>> &canvas,
             const std::shared_ptr<v8::Persistent<v8::Object>> &renderingContext,
@@ -31,5 +33,9 @@ private:
   static void GetProperty(const v8::FunctionCallbackInfo<v8::Value> &args);
   static void ObserveProperty(const v8::FunctionCallbackInfo<v8::Value> &args);
   static void Dispose(const v8::FunctionCallbackInfo<v8::Value> &args);
+  static void CommandsAccessor(v8::Local<v8::String> prop, const v8::PropertyCallbackInfo<v8::Value> &info);
+  static void CommandAccessorProp(v8::Local<v8::Name> prop, const v8::PropertyCallbackInfo<v8::Value> &info);
+  static void CommandAccessorCall(const v8::FunctionCallbackInfo<v8::Value> &args);
+
   static v8::Persistent<v8::Function> constructor;
 };
