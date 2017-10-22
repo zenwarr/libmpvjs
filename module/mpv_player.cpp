@@ -1,6 +1,12 @@
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include <mpv/client.h>
 #include <mpv/opengl_cb.h>
 #include <GL/gl.h>
+#include <GL/glext.h>
 #include <cstdio>
 #include <functional>
 #include <sstream>

@@ -12,3 +12,9 @@ demo
 mpv-build
 dist
 CMakeLists.txt
+deps
+.vs
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
