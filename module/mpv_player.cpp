@@ -2119,6 +2119,12 @@ void MpvPlayer::CommandAccessorCall(const FunctionCallbackInfo<Value> &args) {
   MpvPlayer *player = ObjectWrap::Unwrap<MpvPlayer>(player_obj.As<Object>());
   string cmd_name_cc = string_to_cc(cmd_name.As<String>());
 
+  for (auto cit = cmd_name_cc.begin(); cit != cmd_name_cc.end(); ++cit) {
+    if (*cit == '_') {
+      *cit = '-';
+    }
+  }
+
   // one final check...
   if (!player || cmd_name_cc.empty()) {
     throw_js(i, "MpvPlayer::cmds: invalid command accesser call");
@@ -2126,13 +2132,19 @@ void MpvPlayer::CommandAccessorCall(const FunctionCallbackInfo<Value> &args) {
   }
 
   AutoForeignMpvNode mpv_result;
-  AutoMpvNode mpv_args(cmd_name_cc, args);
-  if (!mpv_args.valid()) {
-    throw_js(i, "MpvPlayer::cmds: invalid arguments");
-    return;
-  }
+  int err_code;
 
-  int err_code = mpv_command_node(player->mpv(), mpv_args.ptr(), &mpv_result.node);
+  if (args.Length() == 0) {
+    err_code = mpv_command_string(player->mpv(), cmd_name_cc.c_str());
+  } else {
+    AutoMpvNode mpv_args(cmd_name_cc, args);
+    if (!mpv_args.valid()) {
+      throw_js(i, "MpvPlayer::cmds: invalid arguments");
+      return;
+    }
+
+    err_code = mpv_command_node(player->mpv(), mpv_args.ptr(), &mpv_result.node);
+  }
 
   if (err_code != MPV_ERROR_SUCCESS) {
     throw_js(i, mpv_error_string(err_code));
