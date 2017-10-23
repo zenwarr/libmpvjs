@@ -179,6 +179,7 @@ public:
 
   shared_ptr<Persistent<Object>> _cmd_accesser;
   shared_ptr<Persistent<ObjectTemplate>> _cmd_accesser_template;
+  shared_ptr<Persistent<ObjectTemplate>> _prop_accesser_template;
 
   /** GL functions implementation **/
 
@@ -1686,6 +1687,7 @@ void MpvPlayer::Init(Local<Object> exports) {
   NODE_SET_PROTOTYPE_METHOD(tpl, "observeProperty", ObserveProperty);
   NODE_SET_PROTOTYPE_METHOD(tpl, "dispose", Dispose);
   tpl->InstanceTemplate()->SetAccessor(make_string(i, "cmds"), CommandsAccessor);
+  tpl->InstanceTemplate()->SetAccessor(make_string(i, "props"), PropsAccessor);
 
   constructor.Reset(i, tpl->GetFunction(ctx).ToLocalChecked());
   exports->Set(ctx, make_string(i, MPV_PLAYER_CLASS), tpl->GetFunction(ctx).ToLocalChecked());
@@ -2053,7 +2055,7 @@ void MpvPlayer::CommandsAccessor(Local<String>, const PropertyCallbackInfo<Value
   Local<Context> ctx = i->GetCurrentContext();
   auto self = ObjectWrap::Unwrap<MpvPlayer>(info.Holder());
 
-  if (!self) {
+  if (!self || !self->mpv()) {
     throw_js(i, "MpvPlayer::cmds: player object is not initialized");
     return;
   }
@@ -2098,6 +2100,14 @@ void MpvPlayer::CommandAccessorProp(Local<Name> prop_name, const PropertyCallbac
   info.GetReturnValue().Set(func.ToLocalChecked());
 }
 
+void normalize_js_name(string &name) {
+  for (auto cit = name.begin(); cit != name.end(); ++cit) {
+    if (*cit == '_') {
+      *cit = '-';
+    }
+  }
+}
+
 void MpvPlayer::CommandAccessorCall(const FunctionCallbackInfo<Value> &args) {
   Isolate *i = args.GetIsolate();
   Local<Context> ctx = i->GetCurrentContext();
@@ -2119,11 +2129,7 @@ void MpvPlayer::CommandAccessorCall(const FunctionCallbackInfo<Value> &args) {
   MpvPlayer *player = ObjectWrap::Unwrap<MpvPlayer>(player_obj.As<Object>());
   string cmd_name_cc = string_to_cc(cmd_name.As<String>());
 
-  for (auto cit = cmd_name_cc.begin(); cit != cmd_name_cc.end(); ++cit) {
-    if (*cit == '_') {
-      *cit = '-';
-    }
-  }
+  normalize_js_name(cmd_name_cc);
 
   // one final check...
   if (!player || cmd_name_cc.empty()) {
@@ -2152,4 +2158,144 @@ void MpvPlayer::CommandAccessorCall(const FunctionCallbackInfo<Value> &args) {
   }
 
   args.GetReturnValue().Set(mpv_node_to_v8_value(i, &mpv_result.node));
+}
+
+void MpvPlayer::PropsAccessor(Local<String>, const PropertyCallbackInfo<Value> &info) {
+  Isolate *i = info.GetIsolate();
+  Local<Context> ctx = i->GetCurrentContext();
+  auto self = ObjectWrap::Unwrap<MpvPlayer>(info.Holder());
+
+  if (!self || !self->mpv()) {
+    throw_js(i, "MpvPlayer::props: player object is not initialized");
+    return;
+  }
+
+  Local<ObjectTemplate> ac_tpl;
+  if (!self->d->_prop_accesser_template || self->d->_prop_accesser_template->IsEmpty()) {
+    ac_tpl = ObjectTemplate::New(i);
+    ac_tpl->SetInternalFieldCount(2);
+    ac_tpl->SetHandler(NamedPropertyHandlerConfiguration(PropsAccessorGet, PropsAccessorSet));
+    self->d->_prop_accesser_template.swap(pers_ptr(new Persistent<ObjectTemplate>(i, ac_tpl)));
+  } else {
+    ac_tpl = self->d->_prop_accesser_template->Get(i);
+  }
+
+  Local<Object> ac = ac_tpl->NewInstance(ctx).ToLocalChecked();
+  ac->SetInternalField(0, info.Holder());
+  ac->SetInternalField(1, make_string(i, ""));
+  info.GetReturnValue().Set(ac);
+}
+
+void MpvPlayer::PropsAccessorGet(Local<Name> prop_name, const PropertyCallbackInfo<Value> &info) {
+  Isolate *i = info.GetIsolate();
+  Local<Context> ctx = i->GetCurrentContext();
+  Local<Object> holder = info.Holder();
+
+  Local<Object> player_obj = holder->GetInternalField(0).As<Object>();
+  Local<String> parent_prop_name = holder->GetInternalField(1).As<String>();
+
+  if (player_obj.IsEmpty()) {
+    throw_js(i, "MpvPlayer::props: player object is not initialized");
+    return;
+  }
+
+  MpvPlayer *player = ObjectWrap::Unwrap<MpvPlayer>(player_obj);
+
+  if (!player || !player->mpv()) {
+    throw_js(i, "MpvPlayer::props: player object is not initialized");
+    return;
+  }
+
+  if (prop_name.IsEmpty() || !prop_name->IsString()) {
+    throw_js(i, "MpvPlayer::props: invalid property accessor, property name is not a string");
+    return;
+  }
+
+  string prop_name_cc = string_to_cc(prop_name.As<String>());
+  if (prop_name_cc.empty()) {
+    throw_js(i, "MpvPlayer::props: invalid property accessor, property name is empty");
+    return;
+  }
+
+  string parent_prop_name_cc = parent_prop_name.IsEmpty() ? "" : string_to_cc(parent_prop_name);
+
+  // now check what is current property name is
+  if (prop_name_cc[0] == '$') {
+    // we should return an accessor object
+    string qual_name = parent_prop_name_cc.empty()
+                          ? prop_name_cc.substr(1)
+                          : parent_prop_name_cc + "/" + prop_name_cc.substr(1);
+    Local<Object> ac = player->d->_prop_accesser_template->Get(i)->NewInstance(ctx).ToLocalChecked();
+    ac->SetInternalField(0, player_obj);
+    ac->SetInternalField(1, make_string(i, qual_name));
+    info.GetReturnValue().Set(ac);
+  } else {
+    // we should return a property value from mpv
+    string qual_name = parent_prop_name_cc.empty()
+                          ? prop_name_cc
+                          : parent_prop_name_cc + "/" + prop_name_cc;
+    normalize_js_name(qual_name);
+
+    AutoForeignMpvNode mpv_result;
+    int err_code = mpv_get_property(player->mpv(), qual_name.c_str(), MPV_FORMAT_NODE, &mpv_result.node);
+    if (err_code != MPV_ERROR_SUCCESS) {
+      throw_js(i, mpv_error_string(err_code));
+      return;
+    }
+
+    info.GetReturnValue().Set(mpv_node_to_v8_value(i, &mpv_result.node));
+  }
+}
+
+void MpvPlayer::PropsAccessorSet(Local<Name> prop_name, Local<Value> value, const PropertyCallbackInfo<Value> &info) {
+  Isolate *i = info.GetIsolate();
+  Local<Context> ctx = i->GetCurrentContext();
+  Local<Object> holder = info.Holder();
+
+  Local<Object> player_obj = holder->GetInternalField(0).As<Object>();
+  Local<String> parent_prop_name = holder->GetInternalField(1).As<String>();
+
+  if (player_obj.IsEmpty()) {
+    throw_js(i, "MpvPlayer::props: player object is not initialized");
+    return;
+  }
+
+  MpvPlayer *player = ObjectWrap::Unwrap<MpvPlayer>(player_obj);
+
+  if (!player || !player->mpv()) {
+    throw_js(i, "MpvPlayer::props: player object is not initialized");
+    return;
+  }
+
+  if (prop_name.IsEmpty() || !prop_name->IsString()) {
+    throw_js(i, "MpvPlayer::props: invalid property accessor, property name is not a string");
+    return;
+  }
+
+  string prop_name_cc = string_to_cc(prop_name.As<String>());
+  if (prop_name_cc.empty()) {
+    throw_js(i, "MpvPlayer::props: invalid property accessor, property name is empty");
+    return;
+  }
+
+  string parent_prop_name_cc = parent_prop_name.IsEmpty() ? "" : string_to_cc(parent_prop_name);
+
+  if (prop_name_cc[0] == '$') {
+    // it is impossible to overwrite a property accessor
+    throw_js(i, "MpvPlayer::props: cannot overwrite a property accessor");
+    return;
+  } else {
+    // we should set a property value for mpv
+    string qual_name = parent_prop_name_cc.empty()
+                          ? prop_name_cc
+                          : parent_prop_name_cc + "/" + prop_name_cc;
+    normalize_js_name(qual_name);
+
+    AutoMpvNode mpv_value(i, value);
+    int err_code = mpv_set_property(player->mpv(), qual_name.c_str(), MPV_FORMAT_NODE, mpv_value.ptr());
+    if (err_code != MPV_ERROR_SUCCESS) {
+      throw_js(i, mpv_error_string(err_code));
+      return;
+    }
+  }
 }

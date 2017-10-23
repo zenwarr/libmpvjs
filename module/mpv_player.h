@@ -36,6 +36,10 @@ private:
   static void CommandsAccessor(v8::Local<v8::String> prop, const v8::PropertyCallbackInfo<v8::Value> &info);
   static void CommandAccessorProp(v8::Local<v8::Name> prop, const v8::PropertyCallbackInfo<v8::Value> &info);
   static void CommandAccessorCall(const v8::FunctionCallbackInfo<v8::Value> &args);
+  static void PropsAccessor(v8::Local<v8::String> prop, const v8::PropertyCallbackInfo<v8::Value> &info);
+  static void PropsAccessorGet(v8::Local<v8::Name> prop, const v8::PropertyCallbackInfo<v8::Value> &info);
+  static void PropsAccessorSet(v8::Local<v8::Name> prop, v8::Local<v8::Value> value,
+                                const v8::PropertyCallbackInfo<v8::Value> &info);
 
   static v8::Persistent<v8::Function> constructor;
 };
