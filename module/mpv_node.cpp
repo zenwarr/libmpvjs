@@ -80,7 +80,9 @@ Local<Value> mpv_node_to_v8_value(Isolate *i, const mpv_node *node) {
     case MPV_FORMAT_NODE_MAP: {
       auto obj = Object::New(i);
       for (int j = 0; j < node->u.list->num; ++j) {
-        obj->Set(String::NewFromUtf8(i, node->u.list->keys[j]), mpv_node_to_v8_value(i, &node->u.list->values[j]));
+        string key_name(node->u.list->keys[j]);
+        mpv_name_for_js(key_name);
+        obj->Set(make_string(i, key_name), mpv_node_to_v8_value(i, &node->u.list->values[j]));
       }
       return obj;
     } break;
@@ -230,6 +232,7 @@ void AutoMpvNode::init_node(Isolate *i, mpv_node &node, const Local<Value> &valu
       node.u.list->keys[j] = new char[prop_name_value.length() + 1];
       memcpy(node.u.list->keys[j], *prop_name_value, static_cast<size_t>(prop_name_value.length()));
       node.u.list->keys[j][prop_name_value.length()] = 0;
+      js_name_for_mpv(node.u.list->keys[j]);
 
       init_node(i, node.u.list->values[j], obj->Get(prop_name));
     }

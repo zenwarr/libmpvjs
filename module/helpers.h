@@ -37,3 +37,7 @@ inline v8::Local<v8::String> make_string(v8::Isolate *i, const std::string &text
  */
 v8::Local<v8::Function> get_method(v8::Isolate *isolate, std::shared_ptr<v8::Persistent<v8::Object>> obj,
                                    const char *method_name);
+
+void js_name_for_mpv(std::string &name);
+void js_name_for_mpv(char *name);
+void mpv_name_for_js(std::string &name);

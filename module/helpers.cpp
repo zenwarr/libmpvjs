@@ -23,3 +23,31 @@ Local<Function> get_method(Isolate *i, shared_ptr<Persistent<Object>> obj, const
 Local<String> make_string(Isolate *i, const char *text) {
   return String::NewFromUtf8(i, text, NewStringType::kNormal).ToLocalChecked();
 }
+
+void js_name_for_mpv(string &name) {
+  for (auto cit = name.begin(); cit != name.end(); ++cit) {
+    if (*cit == '_') {
+      *cit = '-';
+    }
+  }
+}
+
+void js_name_for_mpv(char *name) {
+  if (!name) {
+    return;
+  }
+
+  for (; *name != 0; ++name) {
+    if (*name == '_') {
+      *name = '-';
+    }
+  }
+}
+
+void mpv_name_for_js(string &name) {
+  for (auto cit = name.begin(); cit != name.end(); ++cit) {
+    if (*cit == '-') {
+      *cit = '_';
+    }
+  }
+}

@@ -2100,14 +2100,6 @@ void MpvPlayer::CommandAccessorProp(Local<Name> prop_name, const PropertyCallbac
   info.GetReturnValue().Set(func.ToLocalChecked());
 }
 
-void normalize_js_name(string &name) {
-  for (auto cit = name.begin(); cit != name.end(); ++cit) {
-    if (*cit == '_') {
-      *cit = '-';
-    }
-  }
-}
-
 void MpvPlayer::CommandAccessorCall(const FunctionCallbackInfo<Value> &args) {
   Isolate *i = args.GetIsolate();
   Local<Context> ctx = i->GetCurrentContext();
@@ -2129,7 +2121,7 @@ void MpvPlayer::CommandAccessorCall(const FunctionCallbackInfo<Value> &args) {
   MpvPlayer *player = ObjectWrap::Unwrap<MpvPlayer>(player_obj.As<Object>());
   string cmd_name_cc = string_to_cc(cmd_name.As<String>());
 
-  normalize_js_name(cmd_name_cc);
+  js_name_for_mpv(cmd_name_cc);
 
   // one final check...
   if (!player || cmd_name_cc.empty()) {
@@ -2234,7 +2226,7 @@ void MpvPlayer::PropsAccessorGet(Local<Name> prop_name, const PropertyCallbackIn
     string qual_name = parent_prop_name_cc.empty()
                           ? prop_name_cc
                           : parent_prop_name_cc + "/" + prop_name_cc;
-    normalize_js_name(qual_name);
+    js_name_for_mpv(qual_name);
 
     AutoForeignMpvNode mpv_result;
     int err_code = mpv_get_property(player->mpv(), qual_name.c_str(), MPV_FORMAT_NODE, &mpv_result.node);
@@ -2289,7 +2281,7 @@ void MpvPlayer::PropsAccessorSet(Local<Name> prop_name, Local<Value> value, cons
     string qual_name = parent_prop_name_cc.empty()
                           ? prop_name_cc
                           : parent_prop_name_cc + "/" + prop_name_cc;
-    normalize_js_name(qual_name);
+    js_name_for_mpv(qual_name);
 
     AutoMpvNode mpv_value(i, value);
     int err_code = mpv_set_property(player->mpv(), qual_name.c_str(), MPV_FORMAT_NODE, mpv_value.ptr());
