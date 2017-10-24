@@ -165,8 +165,8 @@ public:
       Maybe<int64_t> mh = rc->Get(ctx, ctx_height_prop->Get(_isolate)).ToLocalChecked()->IntegerValue(ctx);
 
       if (mw.IsJust() && mh.IsJust()) {
-        _dim.width = static_cast<int>(mw.ToChecked());
-        _dim.height = static_cast<int>(mh.ToChecked());
+        _dim.width = static_cast<int>(mw.FromMaybe(0));
+        _dim.height = static_cast<int>(mh.FromMaybe(0));
       }
 
       last_ctx_dim_update = cur_time;
@@ -583,14 +583,15 @@ public:
     auto r = callMethod("getAttribLocation", ARG_COUNT, args);
     return r.IsEmpty()
            ? -1
-           : static_cast<GLint>(r.As<Integer>()->IntegerValue(_isolate->GetCurrentContext()).ToChecked());
+           : static_cast<GLint>(r.As<Integer>()
+                   ->IntegerValue(_isolate->GetCurrentContext()).FromMaybe(-1));
   }
 
   GLenum glGetError() {
     GL_DEBUG("glGetError\n");
 
     auto result = callMethod("getError").As<Integer>();
-    auto err_code = static_cast<GLenum>(result->IntegerValue(_isolate->GetCurrentContext()).ToChecked());
+    auto err_code = static_cast<GLenum>(result->IntegerValue(_isolate->GetCurrentContext()).FromMaybe(0));
     if (err_code != GL_NO_ERROR) {
       GL_DEBUG("glError result: %ld\n", result->IntegerValue());
     }
@@ -636,9 +637,9 @@ public:
 
       default:
         if (r->IsBoolean()) {
-          *params = static_cast<GLint>(r->BooleanValue(_isolate->GetCurrentContext()).ToChecked());
+          *params = static_cast<GLint>(r->BooleanValue(_isolate->GetCurrentContext()).FromMaybe(false));
         } else if (r->IsNumber()) {
-          *params = static_cast<GLint>(r->IntegerValue(_isolate->GetCurrentContext()).ToChecked());
+          *params = static_cast<GLint>(r->IntegerValue(_isolate->GetCurrentContext()).FromMaybe(0));
         } else {
           _throw_js("glGetIntegerv: unexpected return type");
         }
@@ -935,7 +936,7 @@ public:
     GL_DEBUG("glCheckFramebufferStatus\n");
 
     auto r = callMethod("checkFramebufferStatus", MKI(target))->IntegerValue(_isolate->GetCurrentContext());
-    return r.IsJust() ? static_cast<GLenum>(r.ToChecked()) : 0;
+    return static_cast<GLenum>(r.FromMaybe(0));
   }
 
   void glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level) {
@@ -964,7 +965,7 @@ public:
     if (!r.IsEmpty()) {
       auto result = r->IntegerValue(_isolate->GetCurrentContext());
       if (result.IsJust()) {
-        *params = static_cast<GLint>(result.ToChecked());
+        *params = static_cast<GLint>(result.FromMaybe(0));
       }
     }
   }
@@ -1178,12 +1179,12 @@ public:
     if (result->IsNumber() || result->IsNumberObject()) {
       auto maybe_int = result->IntegerValue(_isolate->GetCurrentContext());
       if (maybe_int.IsJust()) {
-        *params = static_cast<GLint>(maybe_int.ToChecked());
+        *params = static_cast<GLint>(maybe_int.FromMaybe(0));
       }
     } else if (result->IsBoolean() || result->IsBooleanObject()) {
       auto maybe_bool = result->BooleanValue(_isolate->GetCurrentContext());
       if (maybe_bool.IsJust()) {
-        *params = static_cast<GLint>(maybe_bool.ToChecked());
+        *params = static_cast<GLint>(maybe_bool.FromMaybe(false));
       }
     } else {
       _throw_js(("getting shader or program paramater: returned value is not an integer and not an boolean, pname = "
@@ -2096,13 +2097,18 @@ void MpvPlayer::CommandAccessorProp(Local<Name> prop_name, const PropertyCallbac
   func_data->Set(make_string(i, "cmdName"), prop_name.As<String>());
   func_data->Set(make_string(i, "player"), player_obj);
 
-  MaybeLocal<Function> func = Function::New(ctx, CommandAccessorCall, func_data, 0, ConstructorBehavior::kThrow);
+  MaybeLocal<Function> func = Function::New(ctx, CommandAccessorCall, func_data);
   info.GetReturnValue().Set(func.ToLocalChecked());
 }
 
 void MpvPlayer::CommandAccessorCall(const FunctionCallbackInfo<Value> &args) {
   Isolate *i = args.GetIsolate();
   Local<Context> ctx = i->GetCurrentContext();
+
+  if (args.IsConstructCall()) {
+    throw_js(i, "MpvPlayer::cmds: cannot call this function as a constructor");
+    return;
+  }
 
   Local<Object> func_data = args.Data().As<Object>();
   if (func_data.IsEmpty()) {

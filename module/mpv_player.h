@@ -4,6 +4,7 @@
 #include <node_object_wrap.h>
 #include <string>
 #include <map>
+#include <memory>
 
 struct mpv_handle;
 struct mpv_opengl_cb_context;

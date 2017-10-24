@@ -41,3 +41,8 @@ v8::Local<v8::Function> get_method(v8::Isolate *isolate, std::shared_ptr<v8::Per
 void js_name_for_mpv(std::string &name);
 void js_name_for_mpv(char *name);
 void mpv_name_for_js(std::string &name);
+
+template<class T, class F>
+inline v8::Local<T> CastLocal(const v8::Local<F> &value) {
+  return v8::Local<T>::Cast(value);
+}

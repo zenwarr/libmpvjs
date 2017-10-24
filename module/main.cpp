@@ -7,4 +7,4 @@ void Init(Local<Object> exports) {
   MpvPlayer::Init(exports);
 }
 
-NODE_MODULE(method, Init);
+NODE_MODULE(libmpvjs, Init);

@@ -180,9 +180,10 @@ void AutoMpvNode::init_node(Isolate *i, mpv_node &node, const Local<Value> &valu
     node.format = MPV_FORMAT_DOUBLE;
     node.u.double_ = value->NumberValue();
   } else if (value->IsArrayBuffer() || value->IsArrayBufferView()) {
+    // in node v6, As<S> is non-const function, so we should cast the reference
     Local<ArrayBuffer> buf = value->IsArrayBufferView()
-                             ? value.As<ArrayBufferView>()->Buffer()
-                             : value.As<ArrayBuffer>();
+                             ? CastLocal<ArrayBufferView>(value)->Buffer()
+                             : CastLocal<ArrayBuffer>(value);
 
     if (buf.IsEmpty()) {
       node.format = MPV_FORMAT_NONE;
@@ -195,7 +196,7 @@ void AutoMpvNode::init_node(Isolate *i, mpv_node &node, const Local<Value> &valu
     node.u.ba->data = new uint8_t[buf->ByteLength()];
     memcpy(node.u.ba->data, buf->GetContents().Data(), buf->ByteLength());
   } else if (value->IsSharedArrayBuffer()) {
-    Local<SharedArrayBuffer> buf = value.As<SharedArrayBuffer>();
+    Local<SharedArrayBuffer> buf = CastLocal<SharedArrayBuffer>(value);
 
     node.format = MPV_FORMAT_BYTE_ARRAY;
     node.u.ba = new mpv_byte_array;
@@ -203,7 +204,7 @@ void AutoMpvNode::init_node(Isolate *i, mpv_node &node, const Local<Value> &valu
     node.u.ba->data = new uint8_t[buf->ByteLength()];
     memcpy(node.u.ba->data, buf->GetContents().Data(), buf->ByteLength());
   } else if (value->IsArray()) {
-    Local<Array> arr = value.As<Array>();
+    Local<Array> arr = CastLocal<Array>(value);
     uint32_t arr_length = arr->Length();
 
     node.format = MPV_FORMAT_NODE_ARRAY;
@@ -216,7 +217,7 @@ void AutoMpvNode::init_node(Isolate *i, mpv_node &node, const Local<Value> &valu
       init_node(i, node.u.list->values[j], arr->Get(j));
     }
   } else if (value->IsObject()) {
-    Local<Object> obj = value.As<Object>();
+    Local<Object> obj = CastLocal<Object>(value);
     Local<Array> own_props = obj->GetOwnPropertyNames(i->GetCurrentContext()).ToLocalChecked();
     uint32_t prop_count = own_props->Length();
 
