@@ -21,3 +21,4 @@ deps
 cmake-build-debug
 cmake-build-release
 prebuilds
+module_dist

@@ -9,7 +9,7 @@
       "cxxflags": [ "-fexceptions" ],
       "conditions": [
         ["OS=='win'", {
-          "include_dirs": ["./deps"],
+          "include_dirs": [ "./deps" ],
           "libraries": [
             "-l../deps/win_libs/mpv-1"
           ]
@@ -28,6 +28,27 @@
             "-l:libass.a",
             "-lpulse",
             "-lfribidi"
+          ]
+        }]
+      ]
+    },
+    {
+      "target_name": "action_after_build",
+      "type": "none",
+      "dependencies": [ "libmpvjs" ],
+      "copies": [
+        {
+          "files": [ "build/Release/libmpvjs.node" ],
+          "destination": "module_dist"
+        }
+      ],
+      "conditions": [
+        ["OS=='win'", {
+          "copies": [
+            {
+              "files": [ "deps/win_libs/mpv-1.dll" ],
+              "destination": "module_dist"
+            }
           ]
         }]
       ]

@@ -1,8 +1,8 @@
 {
   "name": "libmpvjs",
   "version": "0.0.1",
-  "description": "libmpv bindings for Electron and NW.js",
-  "main": "dist/bundle.js",
+  "description": "libmpv bindings for Electron",
+  "main": "index.js",
   "author": "zenwarr",
   "license": "MIT",
   "repository": {
@@ -10,15 +10,18 @@
     "url": "https://github.com/zenwarr/libmpvjs"
   },
   "devDependencies": {
-    "@types/node": "^8.0.45",
-    "node-loader": "^0.6.0",
-    "ts-loader": "^3.0.0",
-    "typescript": "^2.5.3",
-    "webpack": "^3.6.0"
+    "prebuild": "^6.2.2"
   },
+  "dependencies": {
+    "prebuild-install": "^2.3.0"
+  },
+  "bundledDependencies": [
+    "prebuild-install"
+  ],
   "scripts": {
-    "build-js": "webpack --config ./webpack/webpack.config.js",
-    "build-module": "node-gyp configure && node-gyp rebuild --target=1.7.9 --arch=x64 --dist-url=https://atom.io/download/electron"
+    "install": "prebuild-install",
+    "build-module": "node-gyp configure && node-gyp rebuild --target=1.7.9 --arch=x64 --dist-url=https://atom.io/download/electron",
+    "prebuild": "prebuild -t 1.1.0 -t 1.2.0 -t 1.3.0 -t 1.4.0 -t 1.5.0 -t 1.6.0 -t 1.7.0 -t 1.8.0 -r electron --strip"
   },
   "types": "libmpvjs.d.ts"
 }
