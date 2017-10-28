@@ -18,7 +18,7 @@
     "prebuild-install": "^2.3.0"
   },
   "scripts": {
-    "install": "prebuild-install || node install.js",
+    "install": "node install.js",
     "build-module": "node-gyp rebuild --target=1.7.9 --arch=x64 --dist-url=https://atom.io/download/electron",
     "prebuild": "prebuild -t 1.5.0 -t 1.6.0 -t 1.7.0 -t 1.8.0 -r electron --strip"
   },
