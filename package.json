@@ -9,21 +9,26 @@
     "type": "git",
     "url": "https://github.com/zenwarr/libmpvjs"
   },
-  "devDependencies": {
+  "dependencies": {
     "nugget": "^2.0.1",
     "prebuild": "^6.2.2",
-    "tar": "^4.0.2"
-  },
-  "dependencies": {
+    "tar": "^4.0.2",
+    "node-abi": "^2.1.1",
+    "npmlog": "^4.1.2",
     "prebuild-install": "^2.3.0"
   },
-  "bundledDependencies": [
-    "prebuild-install"
-  ],
   "scripts": {
-    "install": "prebuild-install || node post-install.js",
+    "install": "prebuild-install || node install.js",
     "build-module": "node-gyp rebuild --target=1.7.9 --arch=x64 --dist-url=https://atom.io/download/electron",
     "prebuild": "prebuild -t 1.5.0 -t 1.6.0 -t 1.7.0 -t 1.8.0 -r electron --strip"
   },
-  "types": "libmpvjs.d.ts"
+  "types": "libmpvjs.d.ts",
+  "os": [
+    "win32",
+    "linux"
+  ],
+  "engines": {
+    "node": ">=5.0.0",
+    "electron": ">=1.5.0"
+  }
 }
