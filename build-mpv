@@ -1,0 +1,3 @@
+#!/bin/sh
+
+cd ./deps/mpv-build && ./update && ./use-mpv-release && cat ../../mpv_options > ./mpv_options && ./rebuild

@@ -1,0 +1,12 @@
+--enable-libmpv-static
+--disable-libmpv-shared
+--disable-wayland
+--disable-gl-wayland
+--disable-vaapi-wayland
+--disable-gl-cocoa
+--disable-gl-x11
+--disable-egl-x11
+--disable-egl-drm
+CFLAGS=-fPIC
+CCFLAGS=-fPIC
+CXXFLAGS=-fPIC
